@@ -719,6 +719,24 @@ Five independent mechanisms, each individually sufficient to block a rogue LLM:
 5. **Nonce single-use.** Each `nonce` is consumed on first execution; reuse is rejected. `TEST-034`.
 
 **Operator instructions are not privileged.** A human command to "liquidate everything and buy calls" enters the same pipeline as an LLM proposal and is adjudicated by the same rules (`SEC-012`). This is the demo's centrepiece.
+### 14.5 Implementation deviations (normative — these override §14.3 where they conflict)
+
+Building the rule table surfaced places where a literal reading of §14.3 is
+unimplementable or unsafe. Each is recorded here rather than left as a silent
+difference between the spec and the code, and each is covered by a named test.
+
+| ID | Rule | Deviation | Why |
+|---|---|---|---|
+| **DEV-01** | `SK-006` | The concentration base is the **deployable ceiling** (`NAV × SK-001_pct`), not currently-deployed reserve. At the default limits this caps any one underlying at 25% of 60% of NAV = **15% of NAV**. | Measured against *currently* deployed reserve, the first trade can never pass: with nothing deployed the base is zero, so any exposure is infinite concentration and `size_by_concentration` in §15.5 evaluates to zero forever. The deployable ceiling gives the rule the meaning it plainly intends. `test_040_sk006_first_position_in_an_underlying_is_permitted`. |
+| **DEV-02** | `SK-017` | The market-open check applies to every action; the **blackout windows apply to entries only**. | Blackouts exist because pricing is unstable at the bells. Refusing to *close* inside them would strand risk the Claims Desk is obliged to remove, and would directly contradict `FR-103`'s force-flat. `test_043_a_close_still_obeys_the_safety_rules`. |
+| **DEV-03** | `SK-005`, `SK-011`, `SK-013` | Automatically satisfied for `action = CLOSE`. | Not an `SK-000` exemption but a logical one: a close adds no policy, is not an entry, and a breached underlying is a reason to close rather than a reason to block closing. |
+| **DEV-04** | `SK-023` | `MANAGE_ONLY` permits closes and blocks entries. `HALT` and the kill switch block **everything**, closes included. | `MANAGE_ONLY` exists precisely so the book can be managed down. `HALT` is the state entered when the system no longer trusts its own view of the book, where guessing is worse than doing nothing. |
+| **DEV-05** | §15.5 | Sizing also takes the minimum of `size_by_deployed_capital` (`SK-001`) and `size_by_assignment_cost` (`SK-012`). | The §15.5 block lists three constraints, but these two bound size just as directly — a proposal that clears them at one contract can breach them at five. Additional constraints can only reduce the permitted size, never raise it. |
+| **DEV-06** | §11.1 step 3 | Quote validation checks `bid` and `ask` are **finite before comparing them**. | Comparing a `Decimal('NaN')` raises `InvalidOperation` rather than returning `False`, so an unchecked NaN propagates out of validation and kills the whole cycle — violating §11.2's "the Actuary never raises into the cycle". Found by `test_engine_survives_a_quote_that_breaks_mid_pricing`. |
+| **DEV-07** | `SK-014` | A spread's liquidity score is the **minimum of its legs'** scores. | §11.2 defines the score per contract; a spread is only as exitable as its worse leg. |
+
+**SK-999** is reserved for the kernel-level fail-closed verdict (`FR-062`): it is
+not a rule, it is the record that evaluation itself failed.
 
 ---
 
@@ -769,9 +787,13 @@ Selection criteria — every underlying MUST have penny-wide or near-penny optio
 ```
 size_by_position_risk   = floor(NAV × SK-003_pct / max_loss_per_spread)
 size_by_portfolio_room  = floor((NAV × SK-007_pct - current_portfolio_max_loss) / max_loss_per_spread)
-size_by_concentration   = floor((total_reserve × SK-006_pct - underlying_reserve) / max_loss_per_spread)
+size_by_concentration   = floor((deployable × SK-006_pct - underlying_reserve) / max_loss_per_spread)
+size_by_deployed        = floor((deployable - total_reserve) / max_loss_per_spread)          # SK-001, DEV-05
+size_by_assignment      = floor((buying_power - total_assignment_cost) / (Ks × 100))         # SK-012, DEV-05
 permitted               = min(all above)
 final                   = floor(min(llm_requested, permitted) × Π soft_factors × calibration_multiplier)
+
+where deployable        = NAV × SK-001_pct                                                   # DEV-01
 ```
 
 ### 15.6 Calibration profiles (resolves the ASM-001 tension)
