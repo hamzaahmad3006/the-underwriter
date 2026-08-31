@@ -1,0 +1,37 @@
+# --- secrets — never commit (SEC-005, OPS-030 secret scan) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python ---
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# --- database (DB-*: lives on the persistent volume, never in git) ---
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# --- node ---
+node_modules/
+frontend/dist/
+*.local
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

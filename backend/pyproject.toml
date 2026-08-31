@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "underwriter"
+version = "0.1.0"
+description = "The Underwriter — an autonomous AI options underwriting desk"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "apscheduler>=3.11",
+    "alpaca-py>=0.33",
+    "groq>=0.13",
+    "httpx>=0.28",
+    "tenacity>=9.0",
+    "pyyaml>=6.0",
+    "structlog>=24.4",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "freezegun>=1.5",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-PyYAML",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["underwriter"]
+
+# ---------------------------------------------------------------------------
+# Lint
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ASYNC", "S", "DTZ"]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "DTZ"]
+
+# ---------------------------------------------------------------------------
+# Types — OPS-030 requires mypy strict on the kernel and the actuary.
+# The rest of the tree is checked, but not strictly, so the deadline survives.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["underwriter.kernel.*", "underwriter.actuary.*"]
+strict = true
+disallow_any_explicit = true
+
+# ---------------------------------------------------------------------------
+# Tests — OPS-031 gates coverage in CI: kernel 100%, actuary >=95%.
+# Those per-module gates are enforced by the CI job, not here.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+markers = [
+    "live: hits real Alpaca paper credentials; never runs in CI (OPS-033)",
+]

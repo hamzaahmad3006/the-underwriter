@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Design tokens — UI-014 (normative).
+   Semantic colour is defined ONCE, here, and referenced only by token name.
+   A raw hex or a bare `red-500` inside a component is a review failure.
+   Visual reference (SRS §21): a Lloyd's syndicate risk terminal.
+   Dense, calm, monospaced numerics. No gradients, no gamification.
+--------------------------------------------------------------------------- */
+@theme {
+  /* surfaces */
+  --color-surface: #0a0d12;
+  --color-panel: #111721;
+  --color-raised: #161e2b;
+  --color-line: #222c3c;
+
+  /* text */
+  --color-ink: #e6edf7;
+  --color-muted: #8895a8;
+  --color-faint: #5a6577;
+
+  /* brand accent — deliberately NOT one of the semantic three (UI-009) */
+  --color-accent: #6a8cff;
+
+  /* semantic — never the sole carrier of meaning; always paired with an
+     icon or a label (UI-009) */
+  --color-positive: #2fbf71;
+  --color-caution: #d9a441;
+  --color-critical: #e5484d;
+
+  /* kernel verdict vocabulary (§21.5) */
+  --color-approved: #2fbf71;
+  --color-vetoed: #e5484d;
+  --color-pending: #8895a8;
+
+  /* type */
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-num: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+/* UI-015: every numeric cell. Money and Greeks MUST NOT render in the
+   proportional UI face. */
+@utility num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Money is right-aligned with tabular-nums (UI-007). */
+  th, td {
+    text-align: left;
+  }
+}
