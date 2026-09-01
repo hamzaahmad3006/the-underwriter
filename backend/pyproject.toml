@@ -83,7 +83,7 @@ disallow_any_explicit = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers -m 'not live'"
 markers = [
     "live: hits real Alpaca paper credentials; never runs in CI (OPS-033)",
 ]

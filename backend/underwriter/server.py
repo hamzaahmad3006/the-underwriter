@@ -16,7 +16,9 @@ decides anything lives here. The order below matters:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,6 +26,12 @@ from underwriter import __version__
 from underwriter.controllers import system_controller
 from underwriter.middleware import RequestIdMiddleware, install_error_handlers
 from underwriter.routes import api_router
+
+# Read backend/.env if it exists. Real deployments inject secrets through the
+# platform's secret store (OPS: `fly secrets set`), where there is no .env at
+# all, so this is a local-development convenience and never the source of
+# truth. `override=False` keeps a real environment variable winning.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 API_PREFIX = "/api"
 
