@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from underwriter import __version__
 from underwriter.controllers import system_controller
+from underwriter.db import create_all
 from underwriter.middleware import RequestIdMiddleware, install_error_handlers
 from underwriter.routes import api_router
 
@@ -89,6 +90,11 @@ def create_app() -> FastAPI:
     )
 
     install_error_handlers(app)
+
+    # F-11: recording is a precondition for trading, so the schema exists
+    # before the first request rather than on first write. Alembic owns
+    # migrations once the schema settles; this is the day-one path.
+    create_all()
 
     app.include_router(api_router, prefix=API_PREFIX)
 

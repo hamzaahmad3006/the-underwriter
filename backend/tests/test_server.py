@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -239,3 +241,66 @@ def test_readiness_reports_the_alpaca_credential_posture(
     monkeypatch.setenv("ALPACA_DATA_SECRET_KEY", "data-secret")
     alpaca = client.get("/api/health/deep").json()["checks"]["alpaca_rest"]
     assert alpaca["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# API-061 — the audit chain, verifiable in one request
+# ---------------------------------------------------------------------------
+
+
+def test_the_audit_chain_verifies_over_a_real_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """AC-08, end to end through the API rather than against the ledger directly."""
+    # A file, not ":memory:" — the API handler runs in another thread, and an
+    # in-memory database is private to the connection that created it.
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'audit.db'}")
+
+    from underwriter.audit.ledger import Actor, append
+    from underwriter.db import create_all, reset_engine, session_scope
+
+    reset_engine()
+    create_all()
+
+    with session_scope() as session:
+        for index in range(3):
+            append(session, actor=Actor.KERNEL, action="VERDICT_MINTED", after={"i": index})
+
+    body = client.get("/api/audit/verify").json()
+    assert body["valid"] is True
+    assert body["records_checked"] == 3
+    assert body["first_break_seq"] is None
+
+    entries = client.get("/api/audit/log").json()
+    assert entries["returned"] == 3
+    assert entries["records"][0]["actor"] == "KERNEL"
+
+    reset_engine()
+
+
+def test_a_broken_chain_is_reported_not_hidden_behind_a_500(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The endpoint's job is to surface the break, so it answers 200 with valid=false."""
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'broken.db'}")
+
+    from underwriter.audit.ledger import Actor, append
+    from underwriter.db import create_all, reset_engine, session_scope
+    from underwriter.db.models import AuditLog
+
+    reset_engine()
+    create_all()
+
+    with session_scope() as session:
+        for index in range(3):
+            append(session, actor=Actor.OPERATOR, action="MODE_CHANGE", after={"i": index})
+
+    with session_scope() as session:
+        session.query(AuditLog).filter(AuditLog.seq == 2).one().after_json = {"i": 999}
+
+    response = client.get("/api/audit/verify")
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert response.json()["first_break_seq"] == 2
+
+    reset_engine()
