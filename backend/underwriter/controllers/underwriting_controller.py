@@ -192,8 +192,45 @@ def run_cycle(dry_run: bool, force_underlying: str | None) -> dict[str, Any]:
 
 
 def replay(decision_id: str) -> dict[str, Any]:
-    """API-033 — replay stored inputs and diff against the original."""
-    raise EndpointNotReadyError(
-        "Decision replay",
-        "the SQLite persistence layer is not built yet (§18)",
-    )
+    """API-033 — the auditability proof. The diff must be empty (NFR-007).
+
+    A mismatch is not a server error. It is a finding, and a serious one: it
+    means the same inputs stopped producing the same outputs, which is the
+    property the whole audit story rests on. It raises a CRITICAL risk event
+    and is reported plainly rather than hidden behind a 500.
+    """
+    from underwriter.cycle.recorder import CycleRecorder
+    from underwriter.cycle.replay import ReplayUnavailableError, replay_decision
+    from underwriter.db import session_scope
+
+    with session_scope() as session:
+        try:
+            result = replay_decision(session, decision_id)
+        except ReplayUnavailableError as exc:
+            raise EndpointNotReadyError("Decision replay", str(exc)) from exc
+
+        if not result.deterministic:
+            CycleRecorder(session, f"replay:{decision_id}").risk_event(
+                "REPLAY_MISMATCH",
+                "CRITICAL",
+                detail={
+                    "decision_id": decision_id,
+                    "diff": [
+                        {"field": d.field, "recorded": d.recorded, "replayed": d.replayed}
+                        for d in result.diff
+                    ],
+                },
+            )
+
+        return {
+            "as_of": result.as_of.isoformat(),
+            "decision_id": result.decision_id,
+            "deterministic": result.deterministic,
+            "snapshot_hash": result.snapshot_hash,
+            "replayed_hash": result.replayed_hash,
+            "diff": [
+                {"field": d.field, "recorded": d.recorded, "replayed": d.replayed}
+                for d in result.diff
+            ],
+            "detail": result.detail,
+        }

@@ -451,3 +451,82 @@ def test_the_dashboard_reads_what_the_cycle_wrote() -> None:
     assert Decimal(overview["capital"]["reserved"]) > Decimal("0")
     assert PORTFOLIO.nav > Decimal("0")
     assert kernel.DEFAULT_LIMITS.max_open_policies == 8
+
+
+# ---------------------------------------------------------------------------
+# API-033 — the determinism proof
+# ---------------------------------------------------------------------------
+
+
+def test_a_recorded_decision_replays_with_an_empty_diff() -> None:
+    """NFR-007 and AC-08, end to end over stored inputs.
+
+    Only possible because of choices made much earlier: the Actuary takes its
+    clock from the snapshot, every value is Decimal, and the snapshot hashes
+    stably. Any one of those missing and this reports drift on every call.
+    """
+    from underwriter.cycle.replay import replay_decision
+
+    run(FakeLLM(write_json(candidate_id())))
+
+    with session_scope() as session:
+        verdict = session.execute(select(KernelDecision)).scalar_one()
+        result = replay_decision(session, verdict.id)
+
+    assert result.deterministic is True, result.detail
+    assert result.diff == ()
+    assert result.replayed_hash == result.snapshot_hash
+
+
+def test_replay_detects_a_tampered_snapshot() -> None:
+    """Editing the stored chain must not replay clean."""
+    from underwriter.cycle.replay import replay_decision
+
+    run(FakeLLM(write_json(candidate_id())))
+
+    with session_scope() as session:
+        row = session.execute(select(MarketSnapshotRow)).scalar_one()
+        payload = dict(row.chain_json)
+        quotes = [dict(q) for q in payload["quotes"]]
+        quotes[0]["bid"] = "9.99"  # a plausible-looking edit
+        payload["quotes"] = quotes
+        row.chain_json = payload
+
+    with session_scope() as session:
+        verdict = session.execute(select(KernelDecision)).scalar_one()
+        result = replay_decision(session, verdict.id)
+
+    assert result.deterministic is False
+    assert "no longer hashes" in result.detail
+
+
+def test_replay_refuses_a_decision_it_cannot_reconstruct() -> None:
+    from underwriter.cycle.replay import ReplayUnavailableError, replay_decision
+
+    with session_scope() as session, pytest.raises(ReplayUnavailableError, match="no kernel"):
+        replay_decision(session, "does-not-exist")
+
+
+def test_a_replay_mismatch_raises_a_critical_risk_event() -> None:
+    """Determinism breaking is a reason to stop trading, not a log line."""
+    from underwriter.controllers import underwriting_controller
+
+    run(FakeLLM(write_json(candidate_id())))
+
+    with session_scope() as session:
+        row = session.execute(select(MarketSnapshotRow)).scalar_one()
+        payload = dict(row.chain_json)
+        quotes = [dict(q) for q in payload["quotes"]]
+        quotes[0]["ask"] = "8.88"
+        payload["quotes"] = quotes
+        row.chain_json = payload
+        verdict_id = session.execute(select(KernelDecision)).scalar_one().id
+
+    body = underwriting_controller.replay(verdict_id)
+    assert body["deterministic"] is False
+
+    with session_scope() as session:
+        event = session.execute(
+            select(RiskEvent).where(RiskEvent.event_type == "REPLAY_MISMATCH")
+        ).scalar_one()
+        assert event.severity == "CRITICAL"
