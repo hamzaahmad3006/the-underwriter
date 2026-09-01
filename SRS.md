@@ -733,6 +733,8 @@ difference between the spec and the code, and each is covered by a named test.
 | **DEV-04** | `SK-023` | `MANAGE_ONLY` permits closes and blocks entries. `HALT` and the kill switch block **everything**, closes included. | `MANAGE_ONLY` exists precisely so the book can be managed down. `HALT` is the state entered when the system no longer trusts its own view of the book, where guessing is worse than doing nothing. |
 | **DEV-05** | §15.5 | Sizing also takes the minimum of `size_by_deployed_capital` (`SK-001`) and `size_by_assignment_cost` (`SK-012`). | The §15.5 block lists three constraints, but these two bound size just as directly — a proposal that clears them at one contract can breach them at five. Additional constraints can only reduce the permitted size, never raise it. |
 | **DEV-06** | §11.1 step 3 | Quote validation checks `bid` and `ask` are **finite before comparing them**. | Comparing a `Decimal('NaN')` raises `InvalidOperation` rather than returning `False`, so an unchecked NaN propagates out of validation and kills the whole cycle — violating §11.2's "the Actuary never raises into the cycle". Found by `test_engine_survives_a_quote_that_breaks_mid_pricing`. |
+| **DEV-08** | `UI-004` | The dashboard moved from the site root to `/dashboard/*`, and `/` is a landing page carrying the thesis, the pipeline and live system mode. | A judge arriving cold at a dense risk terminal has to reverse-engineer the claim from the tiles. Ten seconds of plain statement first is worth more than one saved click, and it directly serves the Presentation criterion in both rubrics (§32). |
+| **DEV-09** | §20 | No authentication pages exist — no login, register or password reset. The operator token is a single header field in the dashboard shell. | §31 puts OAuth and multi-user accounts explicitly out of scope, and UI-003 requires the whole dashboard to be readable with no token at all. SEC-012 means the token buys no privilege with the Kernel either: an operator's order is adjudicated by the same rules. |
 | **DEV-07** | `SK-014` | A spread's liquidity score is the **minimum of its legs'** scores. | §11.2 defines the score per contract; a spread is only as exitable as its worse leg. |
 
 **SK-999** is reserved for the kernel-level fail-closed verdict (`FR-062`): it is
@@ -1346,7 +1348,7 @@ policies 1─0..1 calibration_records
 | **UI-001** | React 19 + TypeScript + Vite. Server state via TanStack Query with a 10s refetch interval and visible stale indicators. |
 | **UI-002** | Every panel MUST display its `as_of` timestamp. No number appears without provenance. |
 | **UI-003** | The dashboard MUST be fully functional read-only without an operator token. Judges see everything; only controls are gated. |
-| **UI-004** | Deep-linkable routes: `/`, `/book`, `/book/:policyId`, `/risk`, `/ledger`, `/kernel`, `/audit`. |
+| **UI-004** | Deep-linkable routes. `/` is the landing page; the desk lives under `/dashboard`, `/dashboard/book`, `/dashboard/book/:policyId`, `/dashboard/risk`, `/dashboard/kernel`, `/dashboard/ledger`, `/dashboard/audit` (DEV-08). |
 | **UI-005** | Loading states MUST be skeletons, never spinners over stale numbers. Errors MUST be inline and specific. |
 | **UI-006** | Empty states MUST explain *why* it is empty ("No policies open — Kernel vetoed the last 3 proposals; see the Veto Feed"), never a bare "No data". |
 | **UI-007** | Money right-aligned with `tabular-nums`. Losses in the semantic negative colour, never bare red on green. |
