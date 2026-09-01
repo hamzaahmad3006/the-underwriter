@@ -15,7 +15,10 @@ decides anything lives here. The order below matters:
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,6 +27,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from underwriter import __version__
 from underwriter.controllers import system_controller
+from underwriter.cycle import bootstrap
+from underwriter.cycle.scheduler import CycleScheduler
 from underwriter.db import create_all
 from underwriter.middleware import RequestIdMiddleware, install_error_handlers
 from underwriter.routes import api_router
@@ -34,7 +39,17 @@ from underwriter.routes import api_router
 # truth. `override=False` keeps a real environment variable winning.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+log = logging.getLogger(__name__)
+
 API_PREFIX = "/api"
+
+# One scheduler per process, and OPS-020 requires one process. Module level
+# rather than app state so /system/status can read it without a request.
+_scheduler: CycleScheduler | None = None
+
+
+def running_scheduler() -> CycleScheduler | None:
+    return _scheduler
 
 
 class UnsafeConfigurationError(RuntimeError):
@@ -65,6 +80,50 @@ def cors_origins() -> list[str]:
     return origins
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Create the schema, seed config, and start the three cycles.
+
+    ERR-007: the desk always boots in MANAGE_ONLY. After a restart the book and
+    the broker may disagree, and the first cycle must not open a position on
+    top of a divergence nobody has looked at. Reconciliation runs on its own
+    five-minute cadence; an operator promotes to ACTIVE.
+
+    A missing dependency disables its cycle, never the process — an open book
+    still needs managing whether or not a model is available to write new ones.
+    """
+    global _scheduler
+
+    create_all()
+    bootstrap.ensure_system_config()
+
+    if os.environ.get("UNDERWRITER_DISABLE_SCHEDULER", "").lower() == "true":
+        log.info("scheduler disabled by UNDERWRITER_DISABLE_SCHEDULER")
+        yield
+        return
+
+    wiring = bootstrap.build()
+    for note in wiring.notes:
+        log.warning("wiring: %s", note)
+
+    if wiring.scheduler is not None:
+        wiring.scheduler.start()
+        _scheduler = wiring.scheduler
+        log.info(
+            "desk started in %s; underwriting=%s execution=%s",
+            bootstrap.BOOT_MODE,
+            wiring.can_underwrite,
+            wiring.can_execute,
+        )
+
+    try:
+        yield
+    finally:
+        if _scheduler is not None:
+            _scheduler.shutdown()
+            _scheduler = None
+
+
 def create_app() -> FastAPI:
     """Application factory, so tests can build an app without import side effects."""
     assert_paper_trading()
@@ -78,6 +137,7 @@ def create_app() -> FastAPI:
         ),
         docs_url=f"{API_PREFIX}/docs",
         openapi_url=f"{API_PREFIX}/openapi.json",
+        lifespan=lifespan,
     )
 
     app.add_middleware(RequestIdMiddleware)
@@ -90,11 +150,6 @@ def create_app() -> FastAPI:
     )
 
     install_error_handlers(app)
-
-    # F-11: recording is a precondition for trading, so the schema exists
-    # before the first request rather than on first write. Alembic owns
-    # migrations once the schema settles; this is the day-one path.
-    create_all()
 
     app.include_router(api_router, prefix=API_PREFIX)
 

@@ -8,6 +8,7 @@ because "nothing qualified today" is a result, not a failure (FR-026).
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -119,11 +120,75 @@ def decisions(limit: int, offset: int) -> dict[str, Any]:
 
 
 def run_cycle(dry_run: bool, force_underlying: str | None) -> dict[str, Any]:
-    """API-032 — trigger a cycle now (the safe demo trigger)."""
-    raise EndpointNotReadyError(
-        "Manual cycle runs",
-        "the AI Underwriter is not wired yet — resolve ASM-006 first (ROAD-D0-06)",
+    """API-032 — trigger a cycle now.
+
+    `dry_run=true` runs the whole pipeline to a Kernel verdict and transmits
+    nothing. It is the safe demo trigger and it exercises exactly the same code
+    path as a scheduled cycle up to the point of execution — which is what
+    makes it worth demonstrating rather than a mock of one.
+
+    Either way the cycle is persisted. A dry run that left no trace would be a
+    demo of something other than the system.
+    """
+    from underwriter.agent.client import GroqClient, LLMUnavailableError
+    from underwriter.agent.underwriter import AIUnderwriter
+    from underwriter.cycle.bootstrap import build_kernel_context
+    from underwriter.cycle.underwrite import run_underwriting_cycle
+    from underwriter.data.snapshot import SnapshotConfig
+
+    if not has_credentials():
+        raise EndpointNotReadyError(
+            "Manual cycle runs",
+            "no Alpaca credentials are configured (ROAD-D0-02)",
+        )
+
+    try:
+        agent = AIUnderwriter(GroqClient())
+    except (LLMUnavailableError, ValueError) as exc:
+        raise EndpointNotReadyError("Manual cycle runs", str(exc)) from exc
+
+    secret = os.environ.get("KERNEL_SIGNING_SECRET", "").strip()
+    if not secret:
+        raise EndpointNotReadyError(
+            "Manual cycle runs", "KERNEL_SIGNING_SECRET is unset; no verdict can be minted"
+        )
+
+    config = (
+        SnapshotConfig(universe=(force_underlying,))
+        if force_underlying
+        else DEFAULT_SNAPSHOT_CONFIG
     )
+
+    report = run_underwriting_cycle(
+        source=AlpacaMarketData(),
+        agent=agent,
+        context=build_kernel_context(),
+        secret=secret,
+        # No execution engine on this path even when dry_run is false: a demo
+        # trigger that can transmit is not a demo trigger.
+        execution=None,
+        snapshot_config=config,
+        dry_run=True,
+        persist=True,
+    )
+
+    return {
+        "as_of": report.started_at.isoformat(),
+        "correlation_id": report.correlation_id,
+        "status": report.status,
+        "outcome": report.outcome,
+        "detail": report.detail,
+        "steps": list(report.steps),
+        "snapshot_hash": report.snapshot_hash,
+        "candidates_priced": report.candidates_priced,
+        "candidates_discarded": report.candidates_discarded,
+        "decision": report.decision,
+        "verdict": report.verdict,
+        "approved_contracts": report.approved_contracts,
+        "reject_reasons": list(report.reject_reasons),
+        "executed": False,
+        "duration_ms": report.duration_ms,
+    }
 
 
 def replay(decision_id: str) -> dict[str, Any]:

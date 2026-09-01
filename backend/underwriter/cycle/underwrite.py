@@ -25,16 +25,25 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from underwriter.actuary.engine import price_put_credit_spreads
+from underwriter.actuary.engine import ActuaryResult, price_put_credit_spreads
 from underwriter.agent.prompt import PortfolioContext
-from underwriter.agent.underwriter import AIUnderwriter, Outcome
+from underwriter.agent.underwriter import AIUnderwriter, Outcome, UnderwritingOutcome
+from underwriter.cycle.recorder import CycleRecorder
 from underwriter.data.ports import MarketDataSource
-from underwriter.data.snapshot import DEFAULT_SNAPSHOT_CONFIG, SnapshotConfig, build_snapshot
+from underwriter.data.snapshot import (
+    DEFAULT_SNAPSHOT_CONFIG,
+    SnapshotConfig,
+    SnapshotResult,
+    build_snapshot,
+)
+from underwriter.db import session_scope
 from underwriter.domain.money import ZERO
-from underwriter.execution.engine import ExecutionEngine, ExecutionStatus
+from underwriter.domain.proposal import UnderwritingProposal
+from underwriter.execution.engine import ExecutionEngine, ExecutionResult, ExecutionStatus
 from underwriter.kernel import kernel
 from underwriter.kernel.context import KernelContext
 from underwriter.kernel.limits import DEFAULT_LIMITS, KernelLimits
+from underwriter.kernel.verdict import KernelVerdict
 
 
 class CycleStatus(StrEnum):
@@ -92,6 +101,7 @@ def run_underwriting_cycle(
     snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG,
     limits: KernelLimits = DEFAULT_LIMITS,
     dry_run: bool = False,
+    persist: bool = False,
     correlation_id: str | None = None,
 ) -> CycleReport:
     """Run one entry cycle. Never raises; every failure is a recorded outcome.
@@ -99,6 +109,11 @@ def run_underwriting_cycle(
     `dry_run=True` runs the whole pipeline to a Kernel verdict and transmits
     nothing (API-032). It is the safe demo trigger, and it exercises exactly
     the same code path as a live cycle up to the point of execution.
+
+    `persist=True` writes each phase to the book as it completes. Phases commit
+    separately rather than in one transaction: the model call takes seconds,
+    and holding a write lock across it would block the polling dashboard for
+    the duration. Each phase is still atomic with its own audit records.
     """
     started = datetime.now(UTC)
     cid = correlation_id or new_correlation_id()
@@ -134,6 +149,14 @@ def run_underwriting_cycle(
         steps.append("price_candidates")
         priced = price_put_credit_spreads(snapshot, universe=snapshot_config.universe)
 
+        # Recorded before the empty check, not after. An empty candidate set is
+        # exactly when the discards matter most: UI-006 needs the book to
+        # explain why it is empty, and it can only do that from stored reasons.
+        candidate_rows: dict[str, str] = {}
+        if persist:
+            steps.append("record_inputs")
+            candidate_rows = _record_inputs(cid, snapshot_result, priced)
+
         if priced.is_empty:
             return done(
                 CycleStatus.NO_ACTION,
@@ -154,6 +177,16 @@ def run_underwriting_cycle(
             "candidates_discarded": len(priced.discards),
             "decision": str(underwriting.outcome),
         }
+
+        selected_row = (
+            candidate_rows.get(underwriting.selected.candidate_id)
+            if underwriting.selected
+            else None
+        )
+        decision_row: str | None = None
+        if persist and underwriting.outcome is not Outcome.NO_CANDIDATES:
+            steps.append("record_decision")
+            decision_row = _record_decision(cid, underwriting, selected_row)
 
         if underwriting.outcome is Outcome.ABORTED:
             return done(
@@ -180,6 +213,13 @@ def run_underwriting_cycle(
             secret=secret,
             limits=limits,
         )
+
+        verdict_row: str | None = None
+        if persist:
+            # FR-065: persisted *before* it is acted on. F-11 makes recording a
+            # precondition for trading, not bookkeeping that follows it.
+            steps.append("record_verdict")
+            verdict_row = _record_verdict(cid, adjudicated, selected_row, decision_row)
 
         base |= {
             "verdict": str(adjudicated.verdict),
@@ -208,6 +248,20 @@ def run_underwriting_cycle(
         steps.append("execute")
         result = execution.execute(proposal, adjudicated)
 
+        if persist and verdict_row is not None:
+            steps.append("record_policy")
+            _record_execution(
+                cid,
+                proposal,
+                result,
+                contracts=adjudicated.approved_contracts,
+                candidate_row=selected_row,
+                verdict_row=verdict_row,
+                confidence=(
+                    underwriting.decision.confidence_decimal if underwriting.decision else None
+                ),
+            )
+
         return done(
             CycleStatus.SUCCESS if result.status is ExecutionStatus.FILLED else CycleStatus.ABORTED,
             str(result.status),
@@ -220,6 +274,74 @@ def run_underwriting_cycle(
         # The scheduler must survive any cycle. ERR-006 alerts on three
         # consecutive failures; one is recorded and the next tick tries again.
         return done(CycleStatus.ERROR, type(exc).__name__, str(exc))
+
+
+def _record_inputs(
+    correlation_id: str, snapshot: SnapshotResult, priced: ActuaryResult
+) -> dict[str, str]:
+    """Snapshot and candidates, in one transaction with their audit records."""
+    with session_scope() as session:
+        recorder = CycleRecorder(session, correlation_id)
+        snapshot_id = recorder.snapshot(snapshot)
+        return recorder.candidates(priced, snapshot_id)
+
+
+def _record_decision(
+    correlation_id: str, outcome: UnderwritingOutcome, candidate_row: str | None
+) -> str:
+    """FR-043 — including aborted calls, which are the ones worth studying."""
+    with session_scope() as session:
+        return CycleRecorder(session, correlation_id).decision(outcome, candidate_row)
+
+
+def _record_verdict(
+    correlation_id: str,
+    verdict: KernelVerdict,
+    candidate_row: str | None,
+    decision_row: str | None,
+) -> str:
+    with session_scope() as session:
+        return CycleRecorder(session, correlation_id).verdict(
+            verdict, candidate_row_id=candidate_row, decision_row_id=decision_row
+        )
+
+
+def _record_execution(
+    correlation_id: str,
+    proposal: UnderwritingProposal,
+    result: ExecutionResult,
+    *,
+    contracts: int,
+    candidate_row: str | None,
+    verdict_row: str,
+    confidence: Decimal | None,
+) -> None:
+    """The policy, its legs, its reserve, and the order that opened it.
+
+    A policy is written only when something actually filled. Recording one for
+    a rejected or cancelled order would put a position on the book that the
+    broker has never heard of.
+    """
+    with session_scope() as session:
+        recorder = CycleRecorder(session, correlation_id)
+
+        if result.status not in {ExecutionStatus.FILLED, ExecutionStatus.PARTIAL}:
+            recorder.risk_event(
+                "ORDER_NOT_FILLED",
+                "WARN",
+                detail={"status": str(result.status), "detail": result.detail},
+            )
+            return
+
+        policy_id = recorder.policy(
+            proposal,
+            contracts=contracts,
+            candidate_row_id=candidate_row,
+            verdict_row_id=verdict_row,
+            confidence=confidence,
+            status="LEG_RISK" if result.status is ExecutionStatus.PARTIAL else "OPEN",
+        )
+        recorder.order(result, policy_id=policy_id, verdict_row_id=verdict_row)
 
 
 def _portfolio_context(context: KernelContext, limits: KernelLimits) -> PortfolioContext:
