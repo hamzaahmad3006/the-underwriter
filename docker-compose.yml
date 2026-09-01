@@ -1,0 +1,43 @@
+# OPS-026: identical local execution. `docker compose up` should behave the
+# same way the deployed container does, so the differences that bite on
+# deploy day are found on a laptop instead.
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # SEC-004 refuses to boot without this, and it is never overridden here.
+      ALPACA_PAPER_TRADE: "true"
+      DATABASE_URL: sqlite:///data/underwriter.db
+      CORS_ORIGINS: http://localhost:5173
+      ENVIRONMENT: local
+    volumes:
+      # NFR-005: committed records survive a restart, which needs the database
+      # to outlive the container.
+      - underwriter-data:/app/data
+    restart: unless-stopped
+    # OPS-020: one replica. The scheduler is in-process and two would
+    # double-submit every cycle.
+    deploy:
+      replicas: 1
+
+  frontend:
+    image: node:24-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_PROXY: http://backend:8000
+    depends_on:
+      - backend
+
+volumes:
+  underwriter-data:

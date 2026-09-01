@@ -1,0 +1,49 @@
+# Fly.io deployment (§27). One machine, one volume, no autoscaling.
+#
+# OPS-020 is the constraint that shapes this file: exactly one instance must
+# run. The scheduler is in-process, so a second machine would be a second
+# scheduler double-submitting every cycle. auto_stop_machines is off for the
+# same reason — a cold start would miss cycles, and min_machines_running keeps
+# the desk awake through the whole event.
+
+app = "the-underwriter"
+primary_region = "iad"          # close to the US market data endpoints
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  DATABASE_URL = "sqlite:///data/underwriter.db"
+  ALPACA_PAPER_TRADE = "true"   # SEC-004; secrets never live here
+
+[[mounts]]
+  source = "underwriter_data"
+  destination = "/app/data"     # NFR-005: records survive a restart
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+  # OPS-020: never more than one.
+  max_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+# OPS-021: liveness only. Readiness failure marks the instance degraded but
+# must not restart it — a restart mid-cycle aborts work already in flight.
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "20s"
+  method = "GET"
+  path = "/health"
+
+[deploy]
+  # A rolling deploy would briefly run two schedulers.
+  strategy = "immediate"
