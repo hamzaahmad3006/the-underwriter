@@ -109,3 +109,119 @@ export interface SimulateBody {
   mode?: 'ACTIVE' | 'MANAGE_ONLY' | 'HALT'
   kill_switch_engaged?: boolean
 }
+
+// --- Live dashboard shapes -------------------------------------------------
+
+export interface Overview {
+  as_of: string
+  capital: {
+    baseline_equity: Money | null
+    total_equity: Money | null
+    available: Money | null
+    reserved: Money
+    at_risk_pct: Ratio
+  }
+  pnl: { realized: Money; unrealized: Money }
+  book: { open_policies: number; closed_policies: number; policies_written: number }
+  performance: {
+    wins: number
+    losses: number
+    /** Null, not zero — with no settled policies there is no rate to report. */
+    win_rate: Ratio | null
+    loss_ratio: Ratio | null
+    premiums_written: Money
+    claims_paid: Money
+  }
+  risk: { open_risk_events: number; max_deployed_pct: Ratio; max_drawdown_pct: Ratio }
+  empty: boolean
+}
+
+export interface PolicyRow {
+  id: string
+  policy_number: string
+  underlying: string
+  structure: string
+  status: 'PENDING' | 'OPEN' | 'CLOSING' | 'SETTLED' | 'FAILED' | 'LEG_RISK'
+  contracts: number
+  opening_credit: Money | null
+  max_loss: Money | null
+  capital_reserve: Money | null
+  expiration: string | null
+  realized_pnl: Money | null
+  settlement_reason: string | null
+}
+
+export interface PolicyList {
+  as_of: string
+  policies: PolicyRow[]
+  returned: number
+  total: number
+  empty: boolean
+}
+
+export interface Headroom {
+  used: string
+  limit: string
+  utilization_pct?: string
+  headroom: string
+}
+
+export interface Exposure {
+  as_of: string
+  nav: Money | null
+  open_policies: number
+  limits: Record<string, Headroom>
+  concentration: { limit_per_underlying: Money | null; by_underlying: Record<string, Headroom> }
+  reserve_invariant: {
+    holds: boolean
+    detail: string
+    held_reserves: Money | null
+    exposed_max_loss: Money | null
+  }
+  empty: boolean
+}
+
+export interface DecisionRow {
+  id: string
+  correlation_id: string
+  candidate_id: string | null
+  action: 'WRITE' | 'DECLINE'
+  confidence: Ratio | null
+  requested_contracts: number | null
+  rationale: string | null
+  identified_risks: string[]
+  declined_reason: string | null
+  model_version: string | null
+  prompt_sha256: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  latency_ms: number | null
+  retry_count: number
+  created_at: string
+}
+
+export interface DecisionList {
+  as_of: string
+  decisions: DecisionRow[]
+  returned: number
+  empty: boolean
+}
+
+export interface VerdictRow {
+  id: string
+  correlation_id: string
+  proposal_hash: string
+  verdict: 'APPROVE' | 'REJECT'
+  approved_contracts: number
+  reject_reasons: string[]
+  issued_at: string
+  signed: boolean
+}
+
+export interface VerdictFeed {
+  as_of: string
+  decisions: VerdictRow[]
+  approved: number
+  vetoed: number
+  empty: boolean
+}

@@ -1,28 +1,30 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
+import type { Exposure, LimitTable } from '../../../api/types'
 
 /**
- * Greeks, concentration, reserve utilisation and headroom against every limit (§21.3).
- *
- * The panels below are wired to real endpoints. Those endpoints answer 503
- * with a reason until the persistence layer lands, and the UI renders that
- * reason (UI-006) rather than inventing numbers to fill the space.
+ * §21.3 — Greeks, concentration, reserve utilisation, and headroom on every
+ * limit. The rule table is live and comes straight off the Kernel, so the
+ * dashboard can never drift from the rules actually in force (TD-10).
  */
 export function useRisk() {
+  const limits = useQuery({
+    queryKey: ['risk', 'limits'],
+    queryFn: () => api.get<LimitTable>(endpoints.limits),
+  })
+
   const exposure = useQuery({
     queryKey: ['risk', 'exposure'],
-    queryFn: () => api.get<unknown>(endpoints.exposure),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
+    queryFn: () => api.get<Exposure>(endpoints.exposure),
+    retry: false,
   })
+
   const events = useQuery({
     queryKey: ['risk', 'events'],
     queryFn: () => api.get<unknown>(endpoints.riskEvents),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
+    retry: false,
   })
 
-  return {
-    exposure,
-    events,
-  }
+  return { limits, exposure, events }
 }

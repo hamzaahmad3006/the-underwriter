@@ -18,7 +18,7 @@ def overview() -> dict[str, Any]:
 def equity_curve(
     range_: str = Query(default="1d", alias="range", pattern="^(1d|all)$"),
 ) -> dict[str, Any]:
-    return dashboard_controller.equity_curve(range_)
+    return dashboard_controller.equity_series(range_)
 
 
 @router.get("/stats", summary="API-012 performance statistics")

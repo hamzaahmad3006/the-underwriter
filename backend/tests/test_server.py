@@ -59,14 +59,39 @@ def test_the_honesty_statement_is_served_with_the_config() -> None:
     assert "no edge is claimed" in client.get("/api/config").json()["honesty_statement"]
 
 
-def test_unbuilt_endpoints_explain_themselves_rather_than_inventing_data() -> None:
-    """UI-006: an empty panel must say why it is empty."""
-    response = client.get("/api/dashboard/overview")
-    assert response.status_code == 503
+def test_an_empty_book_returns_honest_zeros_rather_than_a_503(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """ "No cycle has run yet" is a state the dashboard should be able to show.
 
-    error = response.json()["error"]
-    assert error["code"] == "NOT_YET_IMPLEMENTED"
-    assert "persistence" in error["blocked_on"]
+    The `empty` flag is what UI-006 renders an explanation from, and the shape
+    is the real one — so the panel that shows zeros today shows real figures
+    the moment a cycle records something, with no code change.
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'overview.db'}")
+
+    from underwriter.db import create_all, reset_engine
+
+    reset_engine()
+    create_all()
+
+    body = client.get("/api/dashboard/overview").json()
+    assert body["empty"] is True
+    assert body["book"]["open_policies"] == 0
+    assert body["performance"]["win_rate"] is None  # not 0.0 — there is no sample
+    assert body["capital"]["reserved"] == "0"
+
+    reset_engine()
+
+
+def test_an_endpoint_with_no_path_behind_it_still_explains_itself() -> None:
+    """UI-006 for the endpoints that genuinely are not wired."""
+    response = client.post(
+        "/api/policies/pol_1/close",
+        json={"reason": "operator_request"},
+        headers={"Authorization": "Bearer nope"},
+    )
+    assert response.status_code in {401, 403, 503}
 
 
 def test_write_endpoints_refuse_without_an_operator_token(

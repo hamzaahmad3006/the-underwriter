@@ -2,27 +2,52 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
 
+export interface AuditRecord {
+  seq: number
+  occurred_at: string
+  correlation_id: string | null
+  actor: string
+  action: string
+  entity_type: string | null
+  entity_id: string | null
+  prev_hash: string | null
+  record_hash: string
+}
+
+export interface ChainVerification {
+  as_of: string
+  valid: boolean
+  records_checked: number
+  first_break_seq: number | null
+  detail: string
+}
+
+export interface AuditTrail {
+  as_of: string
+  records: AuditRecord[]
+  returned: number
+  highest_seq: number
+}
+
 /**
- * The hash-chained record. API-061 walks the chain and reports the first break, if any.
+ * The audit trail and its hash chain. Both are live.
  *
- * The panels below are wired to real endpoints. Those endpoints answer 503
- * with a reason until the persistence layer lands, and the UI renders that
- * reason (UI-006) rather than inventing numbers to fill the space.
+ * A break answers 200 with `valid: false` rather than an error, so the UI has
+ * to render the finding rather than an error state — hiding it behind a 500
+ * would defeat the endpoint.
  */
 export function useAudit() {
-  const log = useQuery({
-    queryKey: ['audit', 'log'],
-    queryFn: () => api.get<unknown>(endpoints.auditLog),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
-  })
-  const verify = useQuery({
+  const verification = useQuery({
     queryKey: ['audit', 'verify'],
-    queryFn: () => api.get<unknown>(endpoints.auditVerify),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
+    queryFn: () => api.get<ChainVerification>(endpoints.auditVerify),
+    retry: false,
   })
 
-  return {
-    log,
-    verify,
-  }
+  const log = useQuery({
+    queryKey: ['audit', 'log'],
+    queryFn: () => api.get<AuditTrail>(endpoints.auditLog),
+    retry: false,
+  })
+
+  return { verification, log }
 }

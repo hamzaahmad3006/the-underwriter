@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 
-/** UI-004's deep-linkable routes, in the order a judge should read them. */
+/** UI-004's routes, in the order a judge should read them. */
 const LINKS = [
   { to: '/dashboard', label: 'Overview', end: true },
   { to: '/dashboard/book', label: 'Book' },
@@ -12,15 +12,15 @@ const LINKS = [
 
 export function Nav() {
   return (
-    <nav className="flex flex-wrap gap-1">
+    <nav className="flex w-max gap-1 sm:w-auto">
       {LINKS.map((link) => (
         <NavLink
           key={link.to}
           to={link.to}
           end={link.end}
           className={({ isActive }) =>
-            `rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-              isActive ? 'bg-raised text-ink' : 'text-muted hover:text-ink'
+            `shrink-0 rounded px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
+              isActive ? 'bg-raised text-ink' : 'text-muted hover:text-ink hover:bg-raised/50'
             }`
           }
         >

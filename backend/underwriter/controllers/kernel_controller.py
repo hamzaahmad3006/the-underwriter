@@ -178,20 +178,96 @@ def simulate(body: SimulateRequest) -> dict[str, object]:
 
 
 def list_decisions(verdict: str | None, limit: int) -> dict[str, object]:
-    """API-043 — the Kernel Veto Feed, §21.5's signature panel."""
-    raise EndpointNotReadyError(
-        "The Kernel Veto Feed",
-        "kernel_decisions is not persisted yet (DB-007). Use POST /kernel/simulate, "
-        "which exercises the same rule table live.",
-    )
+    """API-043 — the Kernel Veto Feed, §21.5's signature panel.
+
+    Rejections are as interesting as approvals here, arguably more so: the feed
+    is where a judge watches the Kernel refuse things, which is the product.
+    """
+    from sqlalchemy import select
+
+    from underwriter.db import session_scope
+    from underwriter.db.models import KernelDecision
+
+    with session_scope() as session:
+        query = select(KernelDecision).order_by(KernelDecision.issued_at.desc()).limit(limit)
+        if verdict:
+            query = query.where(KernelDecision.verdict == verdict)
+
+        rows = session.execute(query).scalars().all()
+        approvals = [row for row in rows if row.verdict == "APPROVE"]
+
+        return {
+            "as_of": datetime.now(UTC).isoformat(),
+            "decisions": [
+                {
+                    "id": row.id,
+                    "correlation_id": row.correlation_id,
+                    "proposal_hash": row.proposal_hash,
+                    "verdict": row.verdict,
+                    "approved_contracts": row.approved_contracts,
+                    "reject_reasons": row.reject_reasons_json or [],
+                    "action_type": row.action_type,
+                    "issued_at": row.issued_at.isoformat(),
+                    "expires_at": row.expires_at.isoformat(),
+                    # Whether one was minted, never the signature itself.
+                    "signed": row.signature is not None,
+                }
+                for row in rows
+            ],
+            "returned": len(rows),
+            "approved": len(approvals),
+            "vetoed": len(rows) - len(approvals),
+            "empty": not rows,
+        }
 
 
 def get_decision(decision_id: str) -> dict[str, object]:
-    """API-044 — the full rule breakdown for one stored verdict."""
-    raise EndpointNotReadyError(
-        "Stored kernel verdicts",
-        "kernel_decisions is not persisted yet (DB-007).",
-    )
+    """API-044 — the full rule breakdown for one stored verdict (FR-061)."""
+    from sqlalchemy import select
+
+    from underwriter.db import session_scope
+    from underwriter.db.models import KernelDecision, RiskCheck
+
+    with session_scope() as session:
+        decision = session.get(KernelDecision, decision_id)
+        if decision is None:
+            raise EndpointNotReadyError(
+                f"Verdict {decision_id}", "no kernel decision exists with that id"
+            )
+
+        checks = (
+            session.execute(select(RiskCheck).where(RiskCheck.kernel_decision_id == decision_id))
+            .scalars()
+            .all()
+        )
+
+        return {
+            "as_of": datetime.now(UTC).isoformat(),
+            "verdict": {
+                "id": decision.id,
+                "correlation_id": decision.correlation_id,
+                "proposal_hash": decision.proposal_hash,
+                "verdict": decision.verdict,
+                "approved_contracts": decision.approved_contracts,
+                "reject_reasons": decision.reject_reasons_json or [],
+                "issued_at": decision.issued_at.isoformat(),
+                "expires_at": decision.expires_at.isoformat(),
+                "signed": decision.signature is not None,
+            },
+            "rules": [
+                {
+                    "rule_id": check.rule_id,
+                    "name": check.rule_name,
+                    "passed": bool(check.passed),
+                    "severity": check.severity,
+                    "observed": check.observed,
+                    "limit": check.limit_value,
+                    "message": check.message,
+                }
+                for check in checks
+            ],
+            "rules_evaluated": len(checks),
+        }
 
 
 def rule_table() -> dict[str, object]:

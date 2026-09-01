@@ -1,28 +1,37 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
+import type { EffectiveConfig, LimitTable, Overview, SystemStatus } from '../../../api/types'
 
 /**
- * Capital, P&L, book shape and the Kernel's veto rate — the tiles a judge reads first (§21.1).
+ * §21.1 — the tiles a judge reads first.
  *
- * The panels below are wired to real endpoints. Those endpoints answer 503
- * with a reason until the persistence layer lands, and the UI renders that
- * reason (UI-006) rather than inventing numbers to fill the space.
+ * Capital and P&L come from the book, which needs the persistence layer to
+ * have run at least one cycle. System state and the active limits are live
+ * now, so the page shows what it genuinely knows and explains the rest
+ * (UI-006) rather than filling the space with plausible numbers.
  */
 export function useOverview() {
-  const overview = useQuery({
-    queryKey: ['overview', 'overview'],
-    queryFn: () => api.get<unknown>(endpoints.overview),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
-  })
-  const stats = useQuery({
-    queryKey: ['overview', 'stats'],
-    queryFn: () => api.get<unknown>(endpoints.stats),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
+  const status = useQuery({
+    queryKey: ['system', 'status'],
+    queryFn: () => api.get<SystemStatus>(endpoints.status),
   })
 
-  return {
-    overview,
-    stats,
-  }
+  const config = useQuery({
+    queryKey: ['config'],
+    queryFn: () => api.get<EffectiveConfig>(endpoints.config),
+  })
+
+  const limits = useQuery({
+    queryKey: ['risk', 'limits'],
+    queryFn: () => api.get<LimitTable>(endpoints.limits),
+  })
+
+  const overview = useQuery({
+    queryKey: ['dashboard', 'overview'],
+    queryFn: () => api.get<Overview>(endpoints.overview),
+    retry: false,
+  })
+
+  return { status, config, limits, overview }
 }

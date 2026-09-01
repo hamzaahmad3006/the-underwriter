@@ -1,22 +1,58 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
+import type { PolicyList } from '../../../api/types'
+
+export interface CandidateRow {
+  candidate_id: string
+  underlying: string
+  expiry: string
+  dte: number
+  short_strike: string
+  long_strike: string
+  net_credit: string
+  max_loss: string
+  edge_ratio: string
+  liquidity_score: string
+  short_delta: string
+}
+
+export interface DiscardRow {
+  candidate_id: string
+  reason: string
+  detail: string
+}
+
+export interface CandidateSet {
+  as_of: string
+  aborted: string | null
+  detail: string
+  candidates: CandidateRow[]
+  discards: DiscardRow[]
+  contracts_seen?: number
+}
 
 /**
- * Every open and settled policy, with the verdict that authorised it (§21.2).
+ * §21.2 — the book, and what the Actuary is looking at right now.
  *
- * The panels below are wired to real endpoints. Those endpoints answer 503
- * with a reason until the persistence layer lands, and the UI renders that
- * reason (UI-006) rather than inventing numbers to fill the space.
+ * The candidate set is live: it runs the real data layer and the real Actuary.
+ * The discards come back with it, because an empty book has to explain itself
+ * and "nothing qualified" is a result rather than a failure (FR-026).
  */
 export function useBook() {
   const policies = useQuery({
-    queryKey: ['book', 'policies'],
-    queryFn: () => api.get<unknown>(endpoints.policies),
-    retry: false, // a 503 from an unbuilt endpoint is a known gap, not a flake
+    queryKey: ['policies'],
+    queryFn: () => api.get<PolicyList>(endpoints.policies),
+    retry: false,
   })
 
-  return {
-    policies,
-  }
+  const candidates = useQuery({
+    queryKey: ['underwriting', 'candidates'],
+    queryFn: () => api.get<CandidateSet>(endpoints.candidates),
+    retry: false,
+    // The chain fetch is slow and rate-limited; this does not need 10s polling.
+    refetchInterval: 60_000,
+  })
+
+  return { policies, candidates }
 }

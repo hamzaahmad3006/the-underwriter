@@ -69,11 +69,53 @@ def candidates(correlation_id: str | None) -> dict[str, Any]:
 
 
 def decisions(limit: int, offset: int) -> dict[str, Any]:
-    """API-031 — LLM decisions with rationale."""
-    raise EndpointNotReadyError(
-        "Underwriting decisions",
-        "the SQLite persistence layer is not built yet (§18)",
-    )
+    """API-031 — LLM decisions with rationale and full provenance (FR-043)."""
+    from sqlalchemy import select
+
+    from underwriter.db import session_scope
+    from underwriter.db.models import UnderwritingDecision
+
+    with session_scope() as session:
+        rows = (
+            session.execute(
+                select(UnderwritingDecision)
+                .order_by(UnderwritingDecision.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .scalars()
+            .all()
+        )
+
+        return {
+            "as_of": datetime.now(UTC).isoformat(),
+            "decisions": [
+                {
+                    "id": row.id,
+                    "correlation_id": row.correlation_id,
+                    "candidate_id": row.candidate_id,
+                    "action": row.action,
+                    "confidence": str(row.confidence) if row.confidence else None,
+                    "requested_contracts": row.requested_contracts,
+                    "rationale": row.rationale,
+                    "identified_risks": row.identified_risks_json or [],
+                    "declined_reason": row.declined_reason,
+                    "model": row.model,
+                    "model_version": row.model_version,
+                    "temperature": str(row.temperature) if row.temperature else None,
+                    # What makes the decision reproducible six weeks later.
+                    "prompt_sha256": row.prompt_sha256,
+                    "prompt_tokens": row.prompt_tokens,
+                    "completion_tokens": row.completion_tokens,
+                    "latency_ms": row.latency_ms,
+                    "retry_count": row.retry_count,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ],
+            "returned": len(rows),
+            "empty": not rows,
+        }
 
 
 def run_cycle(dry_run: bool, force_underlying: str | None) -> dict[str, Any]:
