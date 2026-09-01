@@ -199,3 +199,43 @@ def test_production_refuses_a_wildcard_cors_origin(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("CORS_ORIGINS", "https://the-underwriter.fly.dev,*")
     with pytest.raises(UnsafeConfigurationError, match="SEC-007"):
         cors_origins()
+
+
+# ---------------------------------------------------------------------------
+# API-030 — the candidate set, wired to the real data layer
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_explains_itself_without_alpaca_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "ALPACA_DATA_API_KEY",
+        "ALPACA_DATA_SECRET_KEY",
+        "ALPACA_API_KEY",
+        "ALPACA_SECRET_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    response = client.get("/api/underwriting/candidates")
+    assert response.status_code == 503
+    assert "ROAD-D0-02" in response.json()["error"]["blocked_on"]
+
+
+def test_readiness_reports_the_alpaca_credential_posture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ALP-004: a shared key works but is degraded, and that must be visible."""
+    monkeypatch.delenv("ALPACA_DATA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_DATA_SECRET_KEY", raising=False)
+    monkeypatch.setenv("ALPACA_API_KEY", "account-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "account-secret")
+
+    alpaca = client.get("/api/health/deep").json()["checks"]["alpaca_rest"]
+    assert alpaca["status"] == "degraded"
+    assert "ALP-004" in alpaca["detail"]
+
+    monkeypatch.setenv("ALPACA_DATA_API_KEY", "data-key")
+    monkeypatch.setenv("ALPACA_DATA_SECRET_KEY", "data-secret")
+    alpaca = client.get("/api/health/deep").json()["checks"]["alpaca_rest"]
+    assert alpaca["status"] == "ok"

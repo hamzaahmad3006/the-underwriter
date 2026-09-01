@@ -54,6 +54,9 @@ class ContractQuote:
     implied_volatility: Decimal | None = None
     delta: Decimal | None = None
     vega: Decimal | None = None
+    # FR-005: every record states where it came from. When the MCP path and
+    # the REST path disagree, this is the field that says which one to trust.
+    source: str = "rest"
 
     @property
     def mid(self) -> Decimal:
@@ -103,6 +106,7 @@ class MarketSnapshot:
                         "delta": q.delta,
                         "vega": q.vega,
                         "tradable": q.tradable,
+                        "source": q.source,
                         "fetched_at": q.fetched_at,
                     }
                     for q in self.quotes

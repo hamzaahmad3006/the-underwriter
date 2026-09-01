@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from underwriter import __version__
+from underwriter.data.credentials import has_credentials, load_data_credentials
 from underwriter.kernel.limits import DEFAULT_LIMITS
 
 BOOT_TIME = time.monotonic()
@@ -27,6 +28,28 @@ def health() -> dict[str, Any]:
     }
 
 
+def _alpaca_check() -> dict[str, Any]:
+    """ALP-004: report whether the read path has its own credentials.
+
+    A shared account key still works, but the isolation the SRS asks for is
+    absent, and a degradation nobody can see is a degradation nobody fixes.
+    """
+    if not has_credentials():
+        return {
+            "status": "not_configured",
+            "detail": "no ALPACA_API_KEY / ALPACA_SECRET_KEY (ROAD-D0-02)",
+        }
+
+    credentials = load_data_credentials()
+    if credentials.is_dedicated_data_key:
+        return {"status": "ok", "detail": "dedicated read-only data key (ALP-004)"}
+
+    return {
+        "status": "degraded",
+        "detail": "using the shared account key; a dedicated data key is preferred (ALP-004)",
+    }
+
+
 def health_deep() -> tuple[dict[str, Any], int]:
     """API-071 — readiness, per dependency.
 
@@ -36,7 +59,7 @@ def health_deep() -> tuple[dict[str, Any], int]:
     """
     checks: dict[str, Any] = {
         "database": {"status": "not_configured", "detail": "SQLite layer not built yet"},
-        "alpaca_rest": {"status": "not_configured", "detail": "credentials not wired yet"},
+        "alpaca_rest": _alpaca_check(),
         "mcp": {"status": "not_configured", "detail": "subprocess not supervised yet"},
         "llm": {
             "status": "configured" if os.environ.get("GROQ_API_KEY") else "not_configured",
