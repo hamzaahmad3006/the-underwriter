@@ -67,7 +67,7 @@ These are stated separately because they materially shape scope and were **not v
 | **ASM-003** | A fresh, dedicated Alpaca paper account may be used and judges may be given read access to its performance. | Product owner. Alpaca paper accounts are free and unlimited in practice. | If judges cannot be shown the account, evidence shifts entirely to the in-app dashboard + exported ledger. | Provision the account regardless (§17.1). Dashboard must be self-sufficient as evidence. |
 | **ASM-004** | Submission requires: deployed prototype at a public URL, pitch video ≤5 min MP4, slide deck PDF, public GitHub repo with distributed commits. | LabLab standard submission requirements (documented). | Missing any one is a hard disqualifier. | Confirm the exact submission form fields on day 1. |
 | **ASM-005** | The account is funded with the Alpaca paper default of $100,000. | Alpaca paper default. | All absolute currency limits in §14 are expressed as **percentages of NAV** to make this assumption non-binding. | Verify at provisioning; no code change required if different. |
-| **ASM-006** | The configured `GROQ_MODEL` is a current Groq production model that supports `response_format.type = json_schema`. | Groq's production model list and structured-output support both change without notice; not verified at time of writing. | If the id is retired, every underwriting cycle fails `F-29` until reconfigured. If it supports only `json_object`, schema enforcement moves entirely to the prompt + Pydantic layer (§13.3) — degraded, not broken. | Verify both the model id and its structured-output support against Groq's live models list at Day 0 provisioning, and pin `GROQ_MODEL_FALLBACK` to a second verified id. |
+| **ASM-006** ✅ **RESOLVED 2026-09-01** | The configured `GROQ_MODEL` is a current Groq production model that supports `response_format.type = json_schema`. | Verified live against the project's own Groq key. | — | **Confirmed.** `openai/gpt-oss-120b` (primary) and `openai/gpt-oss-20b` (fallback) are both present on the account and both honour `json_schema` with `strict: true`; a probe call returned a schema-valid `DECLINE`. `llama-3.3-70b-versatile`, named in the original draft, does **not** exist on this key — which is exactly the failure `F-29` was written for. `GROQ_BASE_URL` must be left **unset**: the Groq SDK appends `/openai/v1` itself, so a base URL containing it yields `/openai/v1/openai/v1` and a 404. |
 
 > **ASM-001 is the single highest-leverage unknown in this document.** §15.6 defines two calibration profiles — `CONSERVATIVE` and `PERFORMANCE` — selectable by a single config value, so the strategy can be re-tuned to the confirmed rubric in minutes rather than requiring redesign.
 
@@ -1723,8 +1723,8 @@ schedule:
 
 llm:
   provider: groq                        # OpenAI-compatible endpoint (TD-13)
-  model: openai/gpt-oss-120b            # GROQ_MODEL; must support json_schema (ASM-006)
-  fallback_model: llama-3.3-70b-versatile
+  model: openai/gpt-oss-120b            # GROQ_MODEL; json_schema verified (ASM-006)
+  fallback_model: openai/gpt-oss-20b   # verified (ASM-006)
   structured_output: json_schema        # json_schema | json_object  (§13.3)
   temperature: 0.2
   max_retries: 2
@@ -1755,8 +1755,8 @@ execution:
 | `OPERATOR_TOKEN` | Yes | Dashboard write auth | ≥32 chars (`SEC-018`) |
 | `GROQ_API_KEY` | Yes | Groq inference key | Underwriter process scope only; holds **no** Alpaca credentials (§10.2) |
 | `GROQ_MODEL` | Yes | Primary model id, e.g. `openai/gpt-oss-120b` | Recorded per decision (`FR-043`); MUST support `response_format.json_schema` (`ASM-006`) |
-| `GROQ_MODEL_FALLBACK` | Yes | Secondary model id, e.g. `llama-3.3-70b-versatile` | Used only on `model_decommissioned` / 404 (`F-29`); switch is logged as a `risk_event` |
-| `GROQ_BASE_URL` | No | Default `https://api.groq.com/openai/v1` | OpenAI-compatible; overridable to swap provider without a code change (`TD-13`) |
+| `GROQ_MODEL_FALLBACK` | Yes | Secondary model id, e.g. `openai/gpt-oss-20b` | Used only on `model_decommissioned` / 404 (`F-29`); switch is logged as a `risk_event` |
+| `GROQ_BASE_URL` | No | **Leave unset.** The Groq SDK appends `/openai/v1` itself | Setting it to a URL that already contains the path yields a 404 (`ASM-006`) |
 | `DATABASE_URL` | Yes | `sqlite:///data/underwriter.db` | On the persistent volume |
 | `CORS_ORIGINS` | Yes | Comma-separated allowed origins | No wildcards in prod (`SEC-007`) |
 | `ALERT_WEBHOOK_URL` | Recommended | Discord/Slack alerts | `OPS-009` |
@@ -1925,11 +1925,11 @@ Voiceover: *"Every decision replays byte-for-byte from stored inputs. You do not
 | ID | Task |
 |---|---|
 | ROAD-D0-01 | Confirm **ASM-001** judging criteria from official sources. Set `STRATEGY_PROFILE` accordingly. |
-| ROAD-D0-02 | Create fresh Alpaca paper account; record baseline equity (`ALP-001`, `ALP-002`). |
+| ROAD-D0-02 ✅ | Create fresh Alpaca paper account; record baseline equity (`ALP-001`, `ALP-002`). **Done 2026-09-01: equity $100,000.00, buying power $400,000.00, options level 3.** |
 | ROAD-D0-03 | Verify Level 3 `mleg` with one far-OTM order placed and cancelled (`ALP-003`, `TEST-060`). |
 | ROAD-D0-04 | Install and verify Alpaca CLI (`alpaca doctor`) and MCP server tool listing (`ALP-005`, `ALP-006`). |
 | ROAD-D0-05 | Initialise repo, CI skeleton, `.env.example`, secret scanner. **Push first commits** (`OPS-035`). |
-| ROAD-D0-06 | Create Groq API key. Resolve **ASM-006**: confirm `GROQ_MODEL` and `GROQ_MODEL_FALLBACK` are current production ids and that the primary supports `response_format.type = json_schema`. One throwaway call MUST return a schema-valid `UnderwriterDecision` before Day 1 (§13.3). |
+| ROAD-D0-06 ✅ | Create Groq API key. Resolve **ASM-006**: confirm `GROQ_MODEL` and `GROQ_MODEL_FALLBACK` are current production ids and that the primary supports `response_format.type = json_schema`. One throwaway call MUST return a schema-valid `UnderwriterDecision` before Day 1 (§13.3). |
 
 ### Day 1 — Monday 31 Aug: trade something real
 | ID | Task |
