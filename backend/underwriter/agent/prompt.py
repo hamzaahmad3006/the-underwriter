@@ -55,6 +55,10 @@ class PortfolioContext:
     underlyings_held: tuple[str, ...] = ()
     recent_settlements: tuple[str, ...] = ()
     mode: str = "ACTIVE"
+    # MCP-001: assembled through MCP tools, so the model's view of the world
+    # is genuinely MCP-derived. MCP-005 keeps it out of the Kernel — this
+    # informs judgment; REST bounds authority.
+    mcp_lines: tuple[str, ...] = ()
 
 
 def _money(value: Decimal) -> str:

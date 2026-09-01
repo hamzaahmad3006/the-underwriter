@@ -33,6 +33,30 @@ def health() -> dict[str, Any]:
     }
 
 
+def _mcp_check() -> dict[str, Any]:
+    """§16: is the tool surface there, and is it still read-only?
+
+    Reports the exposed writes rather than asserting there are none. An
+    allowlist regression should be visible on the health endpoint, not
+    discovered later by whatever it lets through.
+    """
+    from underwriter.mcp import DEFAULT_TOOLSETS, is_available
+
+    if not is_available():
+        return {
+            "status": "not_configured",
+            "detail": "alpaca-mcp-server is not installed",
+        }
+
+    return {
+        "status": "ok",
+        "detail": (
+            f"toolsets: {os.environ.get('ALPACA_TOOLSETS') or DEFAULT_TOOLSETS} "
+            "(trading excluded, so no order tool is reachable)"
+        ),
+    }
+
+
 def _alpaca_check() -> dict[str, Any]:
     """ALP-004: report whether the read path has its own credentials.
 
@@ -65,7 +89,7 @@ def health_deep() -> tuple[dict[str, Any], int]:
     checks: dict[str, Any] = {
         "database": {"status": "not_configured", "detail": "SQLite layer not built yet"},
         "alpaca_rest": _alpaca_check(),
-        "mcp": {"status": "not_configured", "detail": "subprocess not supervised yet"},
+        "mcp": _mcp_check(),
         "llm": {
             "status": "configured" if os.environ.get("GROQ_API_KEY") else "not_configured",
             "detail": os.environ.get("GROQ_MODEL", "GROQ_MODEL unset"),

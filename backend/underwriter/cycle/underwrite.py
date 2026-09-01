@@ -102,6 +102,7 @@ def run_underwriting_cycle(
     limits: KernelLimits = DEFAULT_LIMITS,
     dry_run: bool = False,
     persist: bool = False,
+    use_mcp: bool = False,
     correlation_id: str | None = None,
 ) -> CycleReport:
     """Run one entry cycle. Never raises; every failure is a recorded outcome.
@@ -167,8 +168,11 @@ def run_underwriting_cycle(
             )
 
         # 3. AI Underwriter ------------------------------------------------
+        # MCP-001 first: the model's context is assembled over MCP. It never
+        # blocks the cycle — §16.2 marks this path informative, and a cycle
+        # that loses its context still has an Actuary, a Kernel and a book.
         steps.append("underwrite")
-        portfolio = _portfolio_context(context, limits)
+        portfolio = _portfolio_context(context, limits, mcp_context=use_mcp)
         underwriting = agent.decide(priced.proposals, portfolio)
 
         base: dict[str, Any] = {
@@ -344,8 +348,16 @@ def _record_execution(
         recorder.order(result, policy_id=policy_id, verdict_row_id=verdict_row)
 
 
-def _portfolio_context(context: KernelContext, limits: KernelLimits) -> PortfolioContext:
+def _portfolio_context(
+    context: KernelContext, limits: KernelLimits, *, mcp_context: bool = False
+) -> PortfolioContext:
     """What the book looks like, in the shape the prompt expects."""
+    mcp_lines: tuple[str, ...] = ()
+    if mcp_context:
+        from underwriter.mcp import fetch_context
+
+        mcp_lines = fetch_context().as_prompt_lines()
+
     deployable = context.account.nav * limits.max_deployed_pct
     utilization = (
         (context.total_reserve / deployable * Decimal("100")).quantize(Decimal("0.1"))
@@ -361,6 +373,7 @@ def _portfolio_context(context: KernelContext, limits: KernelLimits) -> Portfoli
         net_vega=context.portfolio_net_vega,
         underlyings_held=tuple(sorted({p.underlying for p in context.open_policies})),
         mode=str(context.mode),
+        mcp_lines=mcp_lines,
     )
 
 
