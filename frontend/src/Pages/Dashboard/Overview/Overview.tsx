@@ -1,8 +1,16 @@
+import { Suspense, lazy } from 'react'
+
 import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { Panel } from '../../../components/ui/Panel'
 import { Skeleton } from '../../../components/ui/Skeleton'
 import { Stat } from '../../../components/ui/Stat'
+// Recharts is ~100KB gzipped, and only this one panel needs it. Loading it
+// lazily keeps it out of the initial bundle, so every other route — and the
+// first paint of this one — pays nothing for a chart that may render empty.
+const EquityCurve = lazy(() =>
+  import('./EquityCurve').then((module) => ({ default: module.EquityCurve })),
+)
 import { useOverview } from './useOverview'
 
 function money(value: string | null): string {
@@ -33,7 +41,7 @@ function uptime(seconds: number): string {
  * "0% win rate" and "no settled policies yet" mean very different things.
  */
 export function Overview() {
-  const { status, config, limits, overview } = useOverview()
+  const { status, config, limits, overview, curve } = useOverview()
   const book = overview.data
 
   return (
@@ -91,6 +99,16 @@ export function Overview() {
               </div>
             )}
           </>
+        )}
+      </Panel>
+
+      <Panel title="Equity curve — API-011" asOf={curve.data?.as_of ?? null}>
+        {curve.isLoading && <Skeleton rows={5} />}
+        {curve.error && <ErrorState error={curve.error} what="the equity curve" />}
+        {curve.data && (
+          <Suspense fallback={<Skeleton rows={5} />}>
+            <EquityCurve points={curve.data.points} baseline={curve.data.baseline_equity} />
+          </Suspense>
         )}
       </Panel>
 

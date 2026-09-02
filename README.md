@@ -160,9 +160,10 @@ build fails below these numbers.
 |---|---|---|
 | Solvency Kernel | 100% line **and branch** | 100% |
 | Actuary | ≥ 95% | 99% |
-| Whole backend | — | 86% |
+| Whole backend | — | 84% |
 
-539 tests. `ruff`, `ruff format`, and `mypy` (strict on the Kernel and Actuary)
+587 tests, nineteen of them live against the real paper account, MCP server
+and CLI. `ruff`, `ruff format`, and `mypy` (strict on the Kernel and Actuary)
 all clean, plus TypeScript and oxlint on the front end.
 
 ---
@@ -200,7 +201,9 @@ backend/underwriter/
 ├── agent/        The AI Underwriter. Holds no broker credentials, ever
 ├── kernel/       The Solvency Kernel — 25 rules and the signing key
 ├── execution/    The only package that can transmit an order
-├── claims/       Exit precedence and settlement arithmetic
+├── claims/       Exit precedence, exit pricing, settlement arithmetic
+├── mcp/          The agent tool surface; trading toolset excluded
+├── cli/          `doctor` for readiness, `--dry-run` for order pre-flight
 ├── cycle/        Orchestration, the scheduler, and the recorder
 ├── db/           The 20-table schema and its read models
 ├── audit/        The hash-chained ledger

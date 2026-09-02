@@ -4,6 +4,8 @@ import { EmptyState } from '../../../components/ui/EmptyState'
 import { ErrorState } from '../../../components/ui/ErrorState'
 import { Panel } from '../../../components/ui/Panel'
 import { Skeleton } from '../../../components/ui/Skeleton'
+import { Link } from 'react-router-dom'
+
 import type { PolicyRow } from '../../../api/types'
 import { type CandidateRow, type DiscardRow, useBook } from './useBook'
 
@@ -17,7 +19,15 @@ const STATUS_TONE = {
 } as const
 
 const POLICY_COLUMNS: Column<PolicyRow>[] = [
-  { key: 'no', header: 'Policy', render: (r) => <span className="num">{r.policy_number}</span> },
+  {
+    key: 'no',
+    header: 'Policy',
+    render: (r) => (
+      <Link to={`/dashboard/book/${r.id}`} className="num text-accent hover:underline">
+        {r.policy_number}
+      </Link>
+    ),
+  },
   { key: 'sym', header: 'Underlying', render: (r) => r.underlying },
   {
     key: 'status',

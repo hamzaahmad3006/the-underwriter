@@ -2,6 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
 import type { EffectiveConfig, LimitTable, Overview, SystemStatus } from '../../../api/types'
+import type { EquityPoint } from './EquityCurve'
+
+export interface EquityCurveResponse {
+  as_of: string
+  baseline_equity: string | null
+  points: EquityPoint[]
+  empty: boolean
+}
 
 /**
  * §21.1 — the tiles a judge reads first.
@@ -33,5 +41,11 @@ export function useOverview() {
     retry: false,
   })
 
-  return { status, config, limits, overview }
+  const curve = useQuery({
+    queryKey: ['dashboard', 'equity-curve'],
+    queryFn: () => api.get<EquityCurveResponse>(endpoints.equityCurve('all')),
+    retry: false,
+  })
+
+  return { status, config, limits, overview, curve }
 }

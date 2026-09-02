@@ -17,6 +17,7 @@ import { BrowserRouter, Navigate, Route, Routes as RouterRoutes } from 'react-ro
 import { Layout } from './components/Layout'
 import { Audit } from './Pages/Dashboard/Audit/Audit'
 import { Book } from './Pages/Dashboard/Book/Book'
+import { PolicyDetail } from './Pages/Dashboard/Book/PolicyDetail'
 import { Kernel } from './Pages/Dashboard/Kernel/Kernel'
 import { Ledger } from './Pages/Dashboard/Ledger/Ledger'
 import { Overview } from './Pages/Dashboard/Overview/Overview'
@@ -34,7 +35,7 @@ export function Routes() {
         <Route path="/dashboard" element={<Layout />}>
           <Route index element={<Overview />} />
           <Route path="book" element={<Book />} />
-          <Route path="book/:policyId" element={<Book />} />
+          <Route path="book/:policyId" element={<PolicyDetail />} />
           <Route path="risk" element={<Risk />} />
           <Route path="kernel" element={<Kernel />} />
           <Route path="ledger" element={<Ledger />} />
