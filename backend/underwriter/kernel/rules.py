@@ -508,9 +508,26 @@ def sk011_min_dte(
     )
 
 
+def _entry_quality_exempt(rule_id: str, name: str, message: str) -> RuleResult:
+    """Entry-quality gates do not apply to a close (DEV-10).
+
+    SK-014, SK-015 and SK-016 exist to stop the desk *writing* a bad policy.
+    Applied to an exit they invert: a spread that has gone illiquid, gone wide,
+    or lost its edge is precisely the one that most needs closing, and refusing
+    on those grounds would trap the position and make the stop loss unusable.
+    """
+    return _result(rule_id, name, True, Severity.HARD, "action=CLOSE", "entry gate", message, "")
+
+
 def sk014_liquidity(
     proposal: UnderwritingProposal, context: KernelContext, limits: KernelLimits
 ) -> RuleResult:
+    if proposal.action is Action.CLOSE:
+        return _entry_quality_exempt(
+            "SK-014",
+            "min_liquidity",
+            "An illiquid spread is the one that most needs closing, not the one to trap.",
+        )
     return _result(
         "SK-014",
         "min_liquidity",
@@ -526,6 +543,12 @@ def sk014_liquidity(
 def sk015_leg_spread(
     proposal: UnderwritingProposal, context: KernelContext, limits: KernelLimits
 ) -> RuleResult:
+    if proposal.action is Action.CLOSE:
+        return _entry_quality_exempt(
+            "SK-015",
+            "max_leg_spread",
+            "A wide quote raises the cost of exiting; it is not a reason to stay in.",
+        )
     return _result(
         "SK-015",
         "max_leg_spread",
@@ -541,6 +564,12 @@ def sk015_leg_spread(
 def sk016_edge(
     proposal: UnderwritingProposal, context: KernelContext, limits: KernelLimits
 ) -> RuleResult:
+    if proposal.action is Action.CLOSE:
+        return _entry_quality_exempt(
+            "SK-016",
+            "min_edge_ratio",
+            "Edge is a reason to open a position, never a condition for leaving one.",
+        )
     return _result(
         "SK-016",
         "min_edge_ratio",

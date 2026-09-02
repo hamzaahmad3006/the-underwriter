@@ -11,7 +11,7 @@ a verdict was minted proves nothing if no verdict row exists.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -254,13 +254,26 @@ def test_the_audit_record_never_leaks_a_signature() -> None:
 
 
 def executing_cycle(broker: FakeBroker):  # type: ignore[no-untyped-def]
+    """A cycle that actually transmits.
+
+    The Kernel context is built at real `now`, not the fixture's fixed clock.
+    A verdict minted at a fixed timestamp expires 45 seconds later by the wall
+    clock the Execution Engine reads (FR-064), so a fixed-clock context makes
+    this test pass only until that instant passes in real time — and then fail
+    for a reason that has nothing to do with the code.
+    """
     engine = ExecutionEngine(
         broker,
         secret=SECRET,
         sleep=lambda _s: None,
         rate_limiter=TokenBucket(sleep=lambda _s: None),
     )
-    return run(FakeLLM(write_json(candidate_id())), dry_run=False, execution=engine)
+    return run(
+        FakeLLM(write_json(candidate_id())),
+        dry_run=False,
+        execution=engine,
+        context=make_context(now=datetime.now(UTC)),
+    )
 
 
 def test_a_filled_order_writes_a_policy_a_reserve_and_an_order() -> None:
@@ -530,3 +543,111 @@ def test_a_replay_mismatch_raises_a_critical_risk_event() -> None:
             select(RiskEvent).where(RiskEvent.event_type == "REPLAY_MISMATCH")
         ).scalar_one()
         assert event.severity == "CRITICAL"
+
+
+# ---------------------------------------------------------------------------
+# The management cycle can construct and price its own exits
+# ---------------------------------------------------------------------------
+
+
+def test_an_exit_proposal_is_rebuilt_from_stored_legs() -> None:
+    """A book that can only be managed by the process that wrote it is not
+    manageable. The closing order comes from rows, not from memory."""
+    from underwriter.cycle.bootstrap import open_positions
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+    positions, proposals = open_positions()
+
+    assert len(positions) == 1
+    policy_id = positions[0].policy_id
+    assert policy_id in proposals, "the exit could not be constructed"
+
+    exit_proposal = proposals[policy_id]
+    assert exit_proposal.action.value == "CLOSE"
+    assert len(exit_proposal.legs) == 2
+    assert exit_proposal.short_strike > exit_proposal.long_strike
+
+
+def test_the_rebuilt_exit_produces_a_mirror_order() -> None:
+    """ALP-016: every leg inverts, or the order doubles the position."""
+    from underwriter.cycle.bootstrap import open_positions
+    from underwriter.execution.order import build_exit_order
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+    _, proposals = open_positions()
+    proposal = next(iter(proposals.values()))
+
+    payload = build_exit_order(proposal, contracts=1, target_debit=Decimal("0.25"))
+    short_leg, long_leg = payload["legs"]
+
+    assert short_leg["position_intent"] == "buy_to_close"
+    assert long_leg["position_intent"] == "sell_to_close"
+
+
+def test_a_force_flat_exit_runs_end_to_end_through_the_kernel() -> None:
+    """The exit the Claims Desk must always be able to take (FR-103)."""
+    from underwriter.cycle.bootstrap import open_positions
+    from underwriter.cycle.manage import run_management_cycle
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+    positions, proposals = open_positions()
+
+    # Pin the evaluation date inside the force-flat window.
+    as_of = positions[0].expiry - timedelta(days=1)
+    report = run_management_cycle(
+        positions,
+        proposals_by_policy=proposals,
+        context=make_context(now=datetime.now(UTC)),
+        secret=SECRET,
+        as_of=as_of,
+        dry_run=True,
+    )
+
+    attempt = report.attempts[0]
+    assert attempt.claims.reason is not None
+    assert attempt.claims.reason.value == "FORCE_FLAT"
+    assert attempt.verdict == "APPROVE", attempt.detail
+    assert "no stored proposal" not in attempt.detail
+
+
+def test_a_position_is_priced_from_the_live_chain() -> None:
+    """Without a cost to close, only force flat can ever fire."""
+    from underwriter.claims.pricing import price_position
+
+    quote = price_position(
+        chain(),
+        underlying="SPY",
+        expiry=date(2026, 9, 18),
+        short_symbol="SPY_550",
+        long_symbol="SPY_548",
+    )
+
+    assert quote.priceable is True
+    # Conservative: buy the short back at its ask, sell the long at its bid.
+    assert quote.cost_to_close == Decimal("2.10") - Decimal("1.40")
+
+
+def test_a_position_that_cannot_be_priced_returns_none_not_a_guess() -> None:
+    from underwriter.claims.pricing import price_position
+
+    quote = price_position(
+        chain(),
+        underlying="SPY",
+        expiry=date(2026, 9, 18),
+        short_symbol="NOT_QUOTED",
+        long_symbol="SPY_548",
+    )
+
+    assert quote.priceable is False
+    assert "not quoted" in quote.detail
+
+
+def test_a_negative_close_cost_is_floored_rather_than_reported() -> None:
+    """A credit to close means a bad quote, and would read as a free profit."""
+    from underwriter.claims.pricing import cost_to_close
+
+    short = raw(symbol="S", bid="0.10", ask="0.20")
+    long = raw(symbol="L", bid="0.90", ask="1.00")
+
+    assert cost_to_close(short, long) == Decimal("0")
+    assert cost_to_close(None, long) is None

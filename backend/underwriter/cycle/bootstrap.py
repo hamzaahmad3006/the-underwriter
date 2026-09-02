@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -30,18 +30,26 @@ from sqlalchemy import select
 from underwriter.agent.client import GroqClient, LLMUnavailableError
 from underwriter.agent.underwriter import AIUnderwriter
 from underwriter.claims.desk import ManagedPosition
+from underwriter.claims.pricing import price_position, underlying_price
 from underwriter.cycle.manage import run_management_cycle
 from underwriter.cycle.reconcile import run_reconcile_cycle
 from underwriter.cycle.scheduler import CycleScheduler, JobResult
 from underwriter.cycle.underwrite import CycleStatus, run_underwriting_cycle
 from underwriter.data.alpaca_source import AlpacaMarketData
 from underwriter.data.credentials import has_credentials
+from underwriter.data.ports import MarketDataSource
 from underwriter.data.snapshot import DEFAULT_SNAPSHOT_CONFIG, SnapshotConfig
 from underwriter.db import session_scope
 from underwriter.db.models import Policy, PolicyLeg, SystemConfig
 from underwriter.db.queries import book_summary
+from underwriter.domain.market import OptionRight, Side
 from underwriter.domain.money import ZERO
-from underwriter.domain.proposal import Structure, UnderwritingProposal
+from underwriter.domain.proposal import (
+    Action,
+    SpreadLeg,
+    Structure,
+    UnderwritingProposal,
+)
 from underwriter.execution.alpaca_broker import AlpacaBroker
 from underwriter.execution.engine import ExecutionEngine
 from underwriter.kernel.context import AccountState, KernelContext, OpenPolicy, SystemMode
@@ -145,46 +153,153 @@ def build_kernel_context(*, now: datetime | None = None) -> KernelContext:
         )
 
 
-def open_positions() -> tuple[tuple[ManagedPosition, ...], dict[str, UnderwritingProposal]]:
-    """What the Claims Desk manages this cycle."""
+def rebuild_proposal(policy: Policy, legs: list[PolicyLeg]) -> UnderwritingProposal | None:
+    """Reconstruct the proposal a policy was written from.
+
+    The closing order is the mirror of the opening one, so it needs the same
+    legs, in the same order, with the same symbols. Rebuilding from stored rows
+    rather than keeping the object alive between cycles is deliberate: the
+    process restarts, and a book that can only be managed by a process that has
+    been up since the trade was written is not a book that can be managed.
+    """
+    short = next((leg for leg in legs if leg.side == "SELL"), None)
+    long = next((leg for leg in legs if leg.side == "BUY"), None)
+    if short is None or long is None or not policy.expiration:
+        return None
+
+    expiry = date.fromisoformat(policy.expiration)
+    per_spread = Decimal(policy.contracts or 1)
+    max_loss = (
+        (policy.max_loss or ZERO) / per_spread if per_spread > ZERO else (policy.max_loss or ZERO)
+    )
+
+    spread_legs = (
+        SpreadLeg(
+            symbol=short.option_symbol,
+            right=OptionRight.PUT,
+            side=Side.SELL,
+            strike=short.strike or ZERO,
+            expiry=expiry,
+            ratio_qty=short.ratio_qty or 1,
+        ),
+        SpreadLeg(
+            symbol=long.option_symbol,
+            right=OptionRight.PUT,
+            side=Side.BUY,
+            strike=long.strike or ZERO,
+            expiry=expiry,
+            ratio_qty=long.ratio_qty or 1,
+        ),
+    )
+
+    credit = policy.opening_credit or ZERO
+    return UnderwritingProposal(
+        # SK-024 checks membership against the set supplied for this action, and
+        # the management cycle supplies exactly this one.
+        candidate_id=f"exit:{policy.id}",
+        underlying=policy.underlying,
+        structure=Structure.PUT_CREDIT_SPREAD,
+        action=Action.CLOSE,
+        legs=spread_legs,
+        short_strike=short.strike or ZERO,
+        long_strike=long.strike or ZERO,
+        expiry=expiry,
+        dte=(expiry - datetime.now(UTC).date()).days,
+        net_credit=credit,
+        max_profit=(policy.max_profit or ZERO) / per_spread if per_spread > ZERO else ZERO,
+        max_loss=max_loss,
+        capital_reserve=max_loss,
+        breakeven=(short.strike or ZERO) - credit,
+        credit_to_width=ZERO,
+        p_loss_proxy=ZERO,
+        p_profit_proxy=ZERO,
+        expected_value=ZERO,
+        edge_ratio=ZERO,
+        liquidity_score=ZERO,
+        max_leg_spread_pct=ZERO,
+        short_delta=short.open_delta or ZERO,
+        net_delta=ZERO,
+        net_vega=ZERO,
+        greeks_complete=True,
+        snapshot_hash=f"exit:{policy.id}",
+        snapshot_as_of=datetime.now(UTC),
+    )
+
+
+def open_positions(
+    source: MarketDataSource | None = None,
+) -> tuple[tuple[ManagedPosition, ...], dict[str, UnderwritingProposal]]:
+    """What the Claims Desk manages this cycle, priced where possible.
+
+    Without a live cost to close, only force flat can fire — the profit target
+    and the stop both compare against one. So the chain is fetched per policy
+    when a data source is available, and a position that still cannot be priced
+    is escalated rather than quietly held.
+    """
     with session_scope() as session:
         rows = (
             session.execute(select(Policy).where(Policy.status.in_(("OPEN", "CLOSING"))))
             .scalars()
             .all()
         )
-        legs = {
-            leg.policy_id: leg
-            for leg in session.execute(select(PolicyLeg)).scalars().all()
-            if leg.side == "SELL"
-        }
+        if not rows:
+            return (), {}
 
-        positions = tuple(
-            ManagedPosition(
-                policy_id=row.id,
-                policy_number=row.policy_number,
-                underlying=row.underlying,
-                contracts=row.contracts,
-                opening_credit=row.opening_credit or ZERO,
-                max_loss=row.max_loss or ZERO,
-                short_strike=(legs[row.id].strike or ZERO) if row.id in legs else ZERO,
-                long_strike=ZERO,
-                expiry=datetime.fromisoformat(row.expiration).date()
-                if row.expiration
-                else datetime.now(UTC).date(),
-                # Live cost to close needs a quote the management cycle does not
-                # yet fetch; absent, the Claims Desk escalates rather than
-                # guessing, and force-flat still works on DTE alone.
-                cost_to_close=None,
-            )
-            for row in rows
-            if row.expiration
+        policy_ids = [row.id for row in rows]
+        all_legs = (
+            session.execute(select(PolicyLeg).where(PolicyLeg.policy_id.in_(policy_ids)))
+            .scalars()
+            .all()
         )
-        # Closing orders need the original proposal to build the mirror mleg.
-        # Reconstructing it from stored legs is the next piece of work; until
-        # then the management cycle evaluates and reports, and an exit that
-        # cannot be constructed says so rather than silently doing nothing.
-        return positions, {}
+        legs_by_policy: dict[str, list[PolicyLeg]] = {}
+        for leg in all_legs:
+            legs_by_policy.setdefault(leg.policy_id, []).append(leg)
+
+        positions: list[ManagedPosition] = []
+        proposals: dict[str, UnderwritingProposal] = {}
+
+        for row in rows:
+            legs = legs_by_policy.get(row.id, [])
+            proposal = rebuild_proposal(row, legs)
+            if proposal is not None:
+                proposals[row.id] = proposal
+
+            short = next((leg for leg in legs if leg.side == "SELL"), None)
+            long = next((leg for leg in legs if leg.side == "BUY"), None)
+
+            quote = None
+            price = None
+            if source is not None and short is not None and long is not None and row.expiration:
+                quote = price_position(
+                    source,
+                    underlying=row.underlying,
+                    expiry=date.fromisoformat(row.expiration),
+                    short_symbol=short.option_symbol,
+                    long_symbol=long.option_symbol,
+                )
+                price = underlying_price(source, row.underlying)
+
+            positions.append(
+                ManagedPosition(
+                    policy_id=row.id,
+                    policy_number=row.policy_number,
+                    underlying=row.underlying,
+                    contracts=row.contracts,
+                    opening_credit=row.opening_credit or ZERO,
+                    max_loss=row.max_loss or ZERO,
+                    short_strike=(short.strike or ZERO) if short else ZERO,
+                    long_strike=(long.strike or ZERO) if long else ZERO,
+                    expiry=(
+                        date.fromisoformat(row.expiration)
+                        if row.expiration
+                        else datetime.now(UTC).date()
+                    ),
+                    cost_to_close=quote.cost_to_close if quote else None,
+                    underlying_price=price,
+                )
+            )
+
+        return tuple(positions), proposals
 
 
 def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wiring:
@@ -243,7 +358,7 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
         return JobResult(report.status, report.outcome, report.detail, report.correlation_id)
 
     def manage() -> JobResult:
-        positions, proposals = open_positions()
+        positions, proposals = open_positions(source)
         if not positions:
             return JobResult(CycleStatus.NO_ACTION, "NO_OPEN_POLICIES", "the book is empty")
 

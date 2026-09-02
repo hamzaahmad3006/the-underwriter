@@ -604,3 +604,60 @@ def test_verdict_ttl_matches_the_configured_limit() -> None:
 
 def test_expiry_date_helper_is_the_date_the_fixtures_claim() -> None:
     assert date(2026, 9, 18) == EXPIRY
+
+
+# ---------------------------------------------------------------------------
+# DEV-10 — entry-quality gates must not trap a position
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "field", "bad_value"),
+    [
+        ("SK-014", "liquidity_score", "0.10"),
+        ("SK-015", "max_leg_spread_pct", "0.40"),
+        ("SK-016", "edge_ratio", "-0.50"),
+    ],
+)
+def test_dev10_entry_quality_gates_never_block_a_close(
+    rule_id: str, field: str, bad_value: str
+) -> None:
+    """A spread that has gone illiquid, wide, or edgeless is the one that most
+    needs closing. Blocking the exit on those grounds traps the position and
+    makes the stop loss unusable — the opposite of what the rule is for.
+    """
+    entry = make_proposal(**{field: bad_value})
+    assert result_for(rule_id, entry, make_context()).passed is False
+
+    closing = make_proposal(action=Action.CLOSE, **{field: bad_value})
+    outcome = result_for(rule_id, closing, make_context())
+    assert outcome.passed is True
+    assert outcome.observed == "action=CLOSE"
+
+
+def test_dev10_a_worthless_looking_exit_is_still_approved() -> None:
+    """All three at once: exactly the shape of a position gone wrong."""
+    verdict = kernel.evaluate(
+        make_proposal(
+            action=Action.CLOSE,
+            liquidity_score="0.05",
+            max_leg_spread_pct="0.60",
+            edge_ratio="-1.0",
+        ),
+        requested_contracts=1,
+        context=make_context(),
+        secret=SECRET,
+    )
+    assert verdict.verdict is Decision.APPROVE, kernel.explain(verdict)
+
+
+def test_dev10_the_safety_rules_still_apply_to_a_close() -> None:
+    """The exemption is narrow. A closed market still stops an exit."""
+    verdict = kernel.evaluate(
+        make_proposal(action=Action.CLOSE, liquidity_score="0.05"),
+        requested_contracts=1,
+        context=make_context(market_open=False),
+        secret=SECRET,
+    )
+    assert verdict.verdict is Decision.REJECT
+    assert "MARKET_CLOSED" in verdict.reject_reasons
