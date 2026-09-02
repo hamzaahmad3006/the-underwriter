@@ -33,6 +33,23 @@ def health() -> dict[str, Any]:
     }
 
 
+def _cli_check() -> dict[str, Any]:
+    """ALP-005: `alpaca doctor`, as a readiness dependency."""
+    from underwriter.cli import doctor, is_available
+
+    if not is_available():
+        return {
+            "status": "not_configured",
+            "detail": "the Alpaca CLI is not installed; order pre-flight is skipped (ALP-007)",
+        }
+
+    result = doctor()
+    return {
+        "status": "ok" if result.ok else "degraded",
+        "detail": result.detail,
+    }
+
+
 def _mcp_check() -> dict[str, Any]:
     """§16: is the tool surface there, and is it still read-only?
 
@@ -95,6 +112,7 @@ def health_deep() -> tuple[dict[str, Any], int]:
             "detail": os.environ.get("GROQ_MODEL", "GROQ_MODEL unset"),
         },
         "scheduler": {"status": "not_configured", "detail": "APScheduler not started yet"},
+        "cli": _cli_check(),
         "kernel": {"status": "ok", "detail": "rule table loaded"},
     }
     healthy = all(c["status"] == "ok" for c in checks.values())

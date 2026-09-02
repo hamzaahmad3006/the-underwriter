@@ -104,6 +104,7 @@ class ExecutionEngine:
         poll_interval_sec: float = POLL_INTERVAL_SEC,
         max_retries: int = MAX_RETRIES,
         rate_limiter: TokenBucket | None = None,
+        preflight: Any = None,
         sleep: Any = time.sleep,
         clock: Any = time.monotonic,
     ) -> None:
@@ -114,6 +115,9 @@ class ExecutionEngine:
         self._poll_interval = poll_interval_sec
         self._max_retries = max_retries
         self._bucket = rate_limiter or TokenBucket()
+        # ALP-007. Optional to run, mandatory to respect: a pre-flight that
+        # fails stops the order, and one that is absent does not.
+        self._preflight = preflight
         self._sleep = sleep
         self._clock = clock
 
@@ -153,6 +157,18 @@ class ExecutionEngine:
             )
         else:
             payload = build_entry_order(proposal, contracts=contracts, step=price_step)
+
+        if self._preflight is not None:
+            result = self._preflight(payload)
+            if getattr(result, "blocks_execution", False):
+                return ExecutionResult(
+                    status=ExecutionStatus.REJECTED,
+                    client_order_id=str(payload["client_order_id"]),
+                    contracts_ordered=contracts,
+                    request=payload,
+                    detail=f"pre-flight failed, nothing transmitted: {result.detail}",
+                    as_of=as_of,
+                )
 
         return self._transmit(payload, contracts, as_of)
 

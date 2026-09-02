@@ -35,3 +35,8 @@ frontend/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- vendored tools ---
+# The Alpaca CLI ships as a GitHub release archive rather than a package, so
+# `make tools` fetches it. A 9.5MB binary does not belong in the history.
+backend/.tools/

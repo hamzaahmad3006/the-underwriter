@@ -141,7 +141,8 @@ docker compose up
 |---|---|
 | `make check` | Lint, types, tests and the coverage gates |
 | `make test` | The suite, excluding anything that needs credentials |
-| `make test-live` | Day 0 provisioning checks against the real paper account |
+| `make tools` | Fetch the Alpaca CLI, which ships as a release archive rather than a package |
+| `make test-live` | Day 0 provisioning checks against the real paper account, the live MCP surface, and the CLI pre-flight |
 | `make serve` | The API with the scheduler running |
 
 `make test-live` places no orders unless you also set
@@ -175,6 +176,11 @@ all clean, plus TypeScript and oxlint on the front end.
   to be down at 3am, and SQLAlchemy keeps the Postgres path open.
 - **Polling, not WebSockets.** MCP exposes no streaming, nobody notices a 15
   second refresh, and everybody notices a dead socket on demo day.
+- **Three surfaces, three jobs.** MCP is the agent tool surface, with the
+  trading toolset excluded so no order tool is reachable at all. REST is
+  authoritative for account state and execution. The CLI validates a
+  constructed order before it is sent — a second implementation disagreeing
+  is a cheap way to catch a malformed multi-leg order.
 - **One model call per decision.** No debate, no committee. Every extra agent is
   another schema, another retry path and another latency budget, and risk logic
   inside a model is unauditable by construction.

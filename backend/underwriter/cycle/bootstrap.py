@@ -331,7 +331,21 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
     except Exception as exc:
         notes.append(f"no execution: {exc}")
 
-    execution = ExecutionEngine(broker, secret=secret) if broker is not None else None
+    from underwriter.cli import is_available as cli_available
+    from underwriter.cli import validate_order
+
+    if broker is None:
+        execution = None
+    else:
+        # ALP-007: a second implementation checks the payload before the first
+        # one sends it. Absent CLI means no check, never a blocked cycle.
+        execution = ExecutionEngine(
+            broker,
+            secret=secret,
+            preflight=validate_order if cli_available() else None,
+        )
+        if not cli_available():
+            notes.append("the Alpaca CLI is not installed; order pre-flight is skipped")
 
     def underwrite() -> JobResult:
         if source is None or agent is None:

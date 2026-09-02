@@ -645,3 +645,195 @@ def test_an_unknown_order_status_is_never_treated_as_terminal() -> None:
     order = AlpacaBroker._to_order(Raw())
     assert order.state is OrderState.NEW
     assert order.state.is_terminal is False
+
+
+# ---------------------------------------------------------------------------
+# ALP-007 — the pre-flight, and what it is allowed to do
+# ---------------------------------------------------------------------------
+
+
+class Preflight:
+    """Stands in for the CLI check with a fixed answer."""
+
+    def __init__(self, *, ok: bool, skipped: bool = False) -> None:
+        from underwriter.cli import PreflightResult
+
+        self.result = PreflightResult(ok=ok, skipped=skipped, detail="fixture")
+        self.payloads: list[dict] = []
+
+    def __call__(self, payload: dict):  # type: ignore[no-untyped-def]
+        self.payloads.append(payload)
+        return self.result
+
+
+def test_007_a_failed_preflight_transmits_nothing() -> None:
+    """ALP-007 is a SHOULD to run and a MUST to respect."""
+    broker = FakeBroker(states=[OrderState.FILLED])
+    proposal, verdict = approved()
+
+    result = engine(broker, preflight=Preflight(ok=False)).execute(proposal, verdict, now=NOW)
+
+    assert result.status is ExecutionStatus.REJECTED
+    assert broker.transmitted == [], "an order was sent after the pre-flight failed"
+    assert "pre-flight failed" in result.detail
+
+
+def test_007_a_passing_preflight_lets_the_order_through() -> None:
+    broker = FakeBroker(states=[OrderState.FILLED])
+    proposal, verdict = approved()
+    check = Preflight(ok=True)
+
+    result = engine(broker, preflight=check).execute(proposal, verdict, now=NOW)
+
+    assert result.status is ExecutionStatus.FILLED
+    assert len(broker.transmitted) == 1
+    # It sees exactly what would be sent, not a reconstruction of it.
+    assert check.payloads[0] == broker.transmitted[0]
+
+
+def test_007_a_skipped_preflight_never_blocks_a_cycle() -> None:
+    """An absent optional tool is not a reason to refuse to trade."""
+    broker = FakeBroker(states=[OrderState.FILLED])
+    proposal, verdict = approved()
+
+    result = engine(broker, preflight=Preflight(ok=True, skipped=True)).execute(
+        proposal, verdict, now=NOW
+    )
+    assert result.status is ExecutionStatus.FILLED
+
+
+def test_007_the_preflight_runs_after_authorisation_not_before() -> None:
+    """An unauthorised order must not even reach the pre-flight."""
+    check = Preflight(ok=True)
+    broker = FakeBroker()
+
+    with pytest.raises(UnauthorizedExecution):
+        engine(broker, preflight=check).execute(make_proposal(), None, now=NOW)
+
+    assert check.payloads == []
+    assert broker.transmitted == []
+
+
+def test_007_the_comparison_catches_a_mutated_leg() -> None:
+    """The point of a second implementation: disagreement is the signal."""
+    from underwriter.cli.preflight import _compare
+
+    payload = build_entry_order(make_proposal(), contracts=2)
+    rendered = {**payload, "legs": [dict(leg) for leg in payload["legs"]]}
+    rendered["legs"][0]["position_intent"] = "buy_to_open"
+
+    differences = _compare(payload, rendered)
+    assert differences
+    assert "position_intent" in differences[0]
+
+
+def test_007_the_comparison_ignores_fields_the_cli_adds_of_its_own() -> None:
+    from underwriter.cli.preflight import _compare
+
+    payload = build_entry_order(make_proposal(), contracts=2)
+    rendered = {**payload, "advanced_instructions": {}}
+    assert _compare(payload, rendered) == ()
+
+
+def test_007_a_leg_count_mismatch_is_reported_without_zipping() -> None:
+    from underwriter.cli.preflight import _compare
+
+    payload = build_entry_order(make_proposal(), contracts=1)
+    rendered = {**payload, "legs": payload["legs"][:1]}
+
+    differences = _compare(payload, rendered)
+    assert differences == ("legs: ours=2 cli=1",)
+
+
+# ---------------------------------------------------------------------------
+# ALP-007 — the value check, which the CLI does not do for us
+# ---------------------------------------------------------------------------
+
+
+def test_007_a_well_formed_order_has_no_value_problems() -> None:
+    from underwriter.cli import check_values
+
+    assert check_values(build_entry_order(make_proposal(), contracts=2)) == ()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        ({"order_class": "simple"}, "ALP-010"),
+        ({"type": "market"}, "FR-082"),
+        ({"time_in_force": "fok"}, "ALP-015"),
+        ({"qty": "0"}, "whole positive"),
+        ({"qty": "two"}, "not an integer"),
+    ],
+)
+def test_007_an_illegal_top_level_value_is_caught(mutate: dict[str, str], expected: str) -> None:
+    """The CLI renders these back unchanged, so this check is the only one."""
+    from underwriter.cli import check_values
+
+    payload = {**build_entry_order(make_proposal(), contracts=1), **mutate}
+    problems = check_values(payload)
+
+    assert problems
+    assert any(expected in problem for problem in problems)
+
+
+def test_007_an_illegal_position_intent_is_caught() -> None:
+    """Tested against the real CLI: it renders this back unchanged."""
+    from underwriter.cli import check_values
+
+    payload = build_entry_order(make_proposal(), contracts=1)
+    payload["legs"][0]["position_intent"] = "not_a_real_intent"
+
+    problems = check_values(payload)
+    assert any("ALP-012" in problem for problem in problems)
+
+
+def test_007_an_illegal_side_or_missing_symbol_is_caught() -> None:
+    from underwriter.cli import check_values
+
+    payload = build_entry_order(make_proposal(), contracts=1)
+    payload["legs"][0]["side"] = "hold"
+    payload["legs"][1]["symbol"] = "  "
+
+    problems = check_values(payload)
+    assert any("side" in problem for problem in problems)
+    assert any("no symbol" in problem for problem in problems)
+
+
+def test_007_a_single_leg_order_is_caught_as_uncovered() -> None:
+    from underwriter.cli import check_values
+
+    payload = build_entry_order(make_proposal(), contracts=1)
+    payload["legs"] = payload["legs"][:1]
+
+    assert any("ALP-014" in problem for problem in check_values(payload))
+
+
+def test_007_the_value_check_runs_even_with_no_cli_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An illegal enum is worth catching whether or not the binary is here."""
+    from underwriter.cli import preflight, validate_order
+
+    monkeypatch.setattr(preflight, "is_available", lambda: False)
+
+    payload = build_entry_order(make_proposal(), contracts=1)
+    payload["legs"][0]["position_intent"] = "nonsense"
+
+    result = validate_order(payload)
+    assert result.ok is False
+    assert result.skipped is False
+    assert result.blocks_execution is True
+
+
+def test_007_a_legal_order_skips_cleanly_when_the_cli_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from underwriter.cli import preflight, validate_order
+
+    monkeypatch.setattr(preflight, "is_available", lambda: False)
+
+    result = validate_order(build_entry_order(make_proposal(), contracts=1))
+    assert result.ok is True
+    assert result.skipped is True
+    assert result.blocks_execution is False

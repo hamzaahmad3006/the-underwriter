@@ -1,10 +1,19 @@
 # Local commands. CI runs the same gates in .github/workflows/ci.yml.
 PY := .venv/Scripts/python.exe
 
-.PHONY: install lint fmt types test cov gates check test-live serve
+.PHONY: install tools lint fmt types test cov gates check test-live serve
 
 install:
 	$(PY) -m pip install -e ".[dev]"
+
+# §17.2's third surface. The CLI ships as a GitHub release archive, not a
+# package, so there is no dependency manager to ask — it is fetched into
+# .tools/ and gitignored. Without it the order pre-flight (ALP-007) is
+# skipped rather than failed.
+tools:
+	gh release download v0.0.14 --repo alpacahq/cli \n		--pattern "cli_0.0.14_windows_amd64.zip" --dir .tools --clobber
+	cd .tools && $(PY) -c "import zipfile; zipfile.ZipFile('cli_0.0.14_windows_amd64.zip').extractall('.')"
+	.tools/alpaca.exe --version
 
 lint:
 	$(PY) -m ruff check .
