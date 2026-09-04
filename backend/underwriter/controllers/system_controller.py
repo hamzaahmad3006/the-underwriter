@@ -23,6 +23,11 @@ from underwriter.kernel.limits import DEFAULT_LIMITS
 
 BOOT_TIME = time.monotonic()
 
+# Without these the desk cannot function at all. Everything else can be absent
+# or degraded and the system still does its job, more slowly or with less
+# context — which is the difference readiness should report.
+CRITICAL_DEPENDENCIES = frozenset({"database", "kernel"})
+
 
 def health() -> dict[str, Any]:
     """API-070 — liveness. Always 200 while the process is up."""
@@ -30,6 +35,59 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "version": __version__,
         "as_of": datetime.now(UTC).isoformat(),
+    }
+
+
+def _database_check() -> dict[str, Any]:
+    """Can we actually read the book? Answered by reading it.
+
+    A readiness check that reports on configuration rather than behaviour is
+    the kind that stays green while the thing it watches is broken.
+    """
+    from sqlalchemy import select
+
+    from underwriter.db.models import AuditLog
+
+    try:
+        with session_scope() as session:
+            highest = session.execute(
+                select(AuditLog.seq).order_by(AuditLog.seq.desc()).limit(1)
+            ).scalar_one_or_none()
+    except Exception as exc:
+        return {"status": "down", "detail": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "status": "ok",
+        "detail": f"readable; {highest or 0} audit records",
+    }
+
+
+def _scheduler_check() -> dict[str, Any]:
+    """OPS-020: exactly one scheduler, and it should be running."""
+    from underwriter.server import running_scheduler
+
+    scheduler = running_scheduler()
+    if scheduler is None:
+        return {
+            "status": "not_configured",
+            "detail": "no scheduler in this process (disabled, or running under a test client)",
+        }
+
+    if not scheduler.running:
+        return {"status": "down", "detail": "the scheduler exists but is not running"}
+
+    jobs = scheduler.status()["jobs"]
+    failing = [job for job in jobs if job["consecutive_failures"] > 0]
+    return {
+        "status": "degraded" if failing else "ok",
+        "detail": (
+            f"{len(jobs)} jobs; "
+            + (
+                ", ".join(f"{j['name']} failing x{j['consecutive_failures']}" for j in failing)
+                if failing
+                else "none failing"
+            )
+        ),
     }
 
 
@@ -104,24 +162,38 @@ def health_deep() -> tuple[dict[str, Any], int]:
     degraded, because a restart mid-cycle aborts work that is already in flight.
     """
     checks: dict[str, Any] = {
-        "database": {"status": "not_configured", "detail": "SQLite layer not built yet"},
+        "database": _database_check(),
         "alpaca_rest": _alpaca_check(),
         "mcp": _mcp_check(),
         "llm": {
-            "status": "configured" if os.environ.get("GROQ_API_KEY") else "not_configured",
+            "status": "ok" if os.environ.get("GROQ_API_KEY") else "not_configured",
             "detail": os.environ.get("GROQ_MODEL", "GROQ_MODEL unset"),
         },
-        "scheduler": {"status": "not_configured", "detail": "APScheduler not started yet"},
+        "scheduler": _scheduler_check(),
         "cli": _cli_check(),
         "kernel": {"status": "ok", "detail": "rule table loaded"},
     }
-    healthy = all(c["status"] == "ok" for c in checks.values())
+    # A dependency that is permanently degraded by the account plan — ALP-004
+    # issues no separate data key — must not leave readiness red forever. An
+    # endpoint that is always failing is one nobody reads, which defeats it.
+    # So `down` fails readiness; `degraded` is reported and tolerated.
+    down = [name for name, c in checks.items() if c["status"] == "down"]
+    critical_missing = [
+        name
+        for name, c in checks.items()
+        if name in CRITICAL_DEPENDENCIES and c["status"] not in {"ok", "degraded"}
+    ]
+    degraded = [name for name, c in checks.items() if c["status"] == "degraded"]
+
+    failing = down + critical_missing
     body = {
-        "status": "ok" if healthy else "degraded",
+        "status": "down" if failing else ("degraded" if degraded else "ok"),
         "as_of": datetime.now(UTC).isoformat(),
         "checks": checks,
+        "failing": failing,
+        "degraded": degraded,
     }
-    return body, 200 if healthy else 503
+    return body, 503 if failing else 200
 
 
 def status() -> dict[str, Any]:

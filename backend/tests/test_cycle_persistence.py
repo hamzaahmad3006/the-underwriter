@@ -32,6 +32,7 @@ from underwriter.data.snapshot import SnapshotConfig, build_snapshot
 from underwriter.db import create_all, reset_engine, session_scope
 from underwriter.db.invariants import check_reserve_invariant
 from underwriter.db.models import (
+    Account,
     AuditLog,
     Candidate,
     KernelDecision,
@@ -56,8 +57,23 @@ SOLO = SnapshotConfig(universe=("SPY",))
 @pytest.fixture(autouse=True)
 def db(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'cycle.db'}")
+    monkeypatch.setenv("KERNEL_SIGNING_SECRET", SECRET)
     reset_engine()
     create_all()
+
+    # ALP-002 records the baseline at provisioning, so a real deployment always
+    # has this row. Without it the Kernel reads no account state and refuses
+    # everything on SK-025 — correct behaviour, but not the state under test.
+    with session_scope() as session:
+        session.add(
+            Account(
+                alpaca_account_id="PA_TEST",
+                is_paper=1,
+                baseline_equity=Decimal("100000.00"),
+                baseline_at=datetime.now(UTC),
+            )
+        )
+
     yield
     reset_engine()
 
@@ -651,3 +667,103 @@ def test_a_negative_close_cost_is_floored_rather_than_reported() -> None:
 
     assert cost_to_close(short, long) == Decimal("0")
     assert cost_to_close(None, long) is None
+
+
+# ---------------------------------------------------------------------------
+# API-022, API-052 — the operator's whole control surface
+# ---------------------------------------------------------------------------
+
+
+def test_022_an_operator_close_goes_through_the_kernel_like_anything_else() -> None:
+    """SEC-012: the request is adjudicated, not obeyed."""
+    from underwriter.controllers import operator_controller
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+
+    with session_scope() as session:
+        policy_id = session.execute(select(Policy)).scalar_one().id
+
+    body = operator_controller.request_close(policy_id, "operator_request")
+
+    assert body["verdict"] == "APPROVE"
+    # This endpoint asks. The management cycle transmits.
+    assert body["executed"] is False
+    assert body["kernel_decision_id"]
+
+
+def test_022_a_refused_close_returns_the_failing_rules_not_a_way_round_them() -> None:
+    """TD-11: there is no override, and the absence of one is the demo."""
+    from fastapi import HTTPException
+
+    from underwriter.controllers import operator_controller
+    from underwriter.db.models import SystemConfig
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+
+    with session_scope() as session:
+        policy_id = session.execute(select(Policy)).scalar_one().id
+        session.add(SystemConfig(id=1, mode="HALT", updated_by="test"))
+
+    with pytest.raises(HTTPException) as raised:
+        operator_controller.request_close(policy_id, "operator_request")
+
+    assert raised.value.status_code == 403
+    assert raised.value.detail["verdict"] == "REJECT"
+    assert raised.value.detail["executed"] is False
+    assert raised.value.detail["reject_reasons"]
+
+
+def test_022_the_request_is_recorded_even_when_it_is_refused() -> None:
+    """An operator asking for something the Kernel refuses is the interesting part."""
+    from fastapi import HTTPException
+
+    from underwriter.controllers import operator_controller
+    from underwriter.db.models import AuditLog, SystemConfig
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+
+    with session_scope() as session:
+        policy_id = session.execute(select(Policy)).scalar_one().id
+        session.add(SystemConfig(id=1, mode="HALT", updated_by="test"))
+
+    with pytest.raises(HTTPException):
+        operator_controller.request_close(policy_id, "operator_request")
+
+    with session_scope() as session:
+        requests = (
+            session.execute(select(AuditLog).where(AuditLog.action == "CLOSE_REQUESTED"))
+            .scalars()
+            .all()
+        )
+        assert len(requests) == 1
+        assert requests[0].actor == "OPERATOR"
+        assert verify_chain(session).valid is True
+
+
+def test_022_a_settled_policy_cannot_be_closed_again() -> None:
+    from fastapi import HTTPException
+
+    from underwriter.controllers import operator_controller
+
+    executing_cycle(FakeBroker(states=[OrderState.FILLED]))
+
+    with session_scope() as session:
+        policy = session.execute(select(Policy)).scalar_one()
+        policy.status = "SETTLED"
+        policy_id = policy.id
+
+    with pytest.raises(HTTPException) as raised:
+        operator_controller.request_close(policy_id, "operator_request")
+
+    assert raised.value.status_code == 409
+
+
+def test_022_an_unknown_policy_is_a_404() -> None:
+    from fastapi import HTTPException
+
+    from underwriter.controllers import operator_controller
+
+    with pytest.raises(HTTPException) as raised:
+        operator_controller.request_close("no-such-policy", "operator_request")
+
+    assert raised.value.status_code == 404

@@ -29,12 +29,51 @@ def test_an_inbound_correlation_id_is_honoured() -> None:
     assert response.headers["X-Correlation-ID"] == "req_from_caller"
 
 
-def test_readiness_reports_degraded_while_dependencies_are_unbuilt() -> None:
+def test_readiness_tolerates_degraded_but_fails_on_down(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A permanently degraded dependency must not leave readiness red forever.
+
+    ALP-004 issues no separate data key on this plan, so `alpaca_rest` is
+    degraded for the life of the account. An endpoint that always fails is one
+    nobody reads, which defeats the point of having it — so `down` fails
+    readiness and `degraded` is reported and tolerated.
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'ready.db'}")
+
+    from underwriter.db import create_all, reset_engine
+
+    reset_engine()
+    create_all()
+
+    response = client.get("/api/health/deep")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] in {"ok", "degraded"}
+    assert body["failing"] == []
+    assert body["checks"]["kernel"]["status"] == "ok"
+    assert body["checks"]["database"]["status"] == "ok"
+
+    reset_engine()
+
+
+def test_readiness_fails_when_a_critical_dependency_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The book being unreadable is the one thing that must fail readiness."""
+    from underwriter.controllers import system_controller
+
+    monkeypatch.setattr(
+        system_controller,
+        "_database_check",
+        lambda: {"status": "down", "detail": "disk on fire"},
+    )
+
     response = client.get("/api/health/deep")
     assert response.status_code == 503
-    body = response.json()
-    assert body["status"] == "degraded"
-    assert body["checks"]["kernel"]["status"] == "ok"
+    assert response.json()["status"] == "down"
+    assert "database" in response.json()["failing"]
 
 
 def test_the_limit_table_comes_from_the_kernel_itself() -> None:

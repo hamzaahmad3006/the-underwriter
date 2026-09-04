@@ -96,6 +96,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     create_all()
     bootstrap.ensure_system_config()
+    # ALP-002: without the baseline the Kernel reads no account state and
+    # refuses everything on SK-025, including a close.
+    bootstrap.ensure_account()
 
     if os.environ.get("UNDERWRITER_DISABLE_SCHEDULER", "").lower() == "true":
         log.info("scheduler disabled by UNDERWRITER_DISABLE_SCHEDULER")

@@ -18,7 +18,6 @@ from underwriter.db import session_scope
 from underwriter.db.models import Fill, Order, PnlRecord, Policy, PositionSnapshot
 from underwriter.db.queries import book_summary
 from underwriter.domain.money import ZERO
-from underwriter.middleware.error_handler import EndpointNotReadyError
 
 
 def _money(value: Decimal | None) -> str | None:
@@ -116,12 +115,10 @@ def positions() -> dict[str, Any]:
 
 
 def reconcile() -> dict[str, Any]:
-    """API-052 — force reconciliation now."""
-    raise EndpointNotReadyError(
-        "Forced reconciliation",
-        "the reconcile cycle runs on the scheduler; triggering it by hand needs the "
-        "broker wired into the running process",
-    )
+    """API-052 — run reconciliation now, rather than waiting for the tick."""
+    from underwriter.controllers import operator_controller
+
+    return operator_controller.force_reconcile()
 
 
 def pnl(granularity: str) -> dict[str, Any]:

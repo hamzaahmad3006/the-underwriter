@@ -148,15 +148,7 @@ def get_policy(policy_id: str) -> dict[str, Any]:
 
 
 def request_close(policy_id: str, reason: str) -> dict[str, Any]:
-    """API-022 — ask the Kernel to authorise a close.
+    """API-022 — delegated, so there is exactly one operator close path."""
+    from underwriter.controllers import operator_controller
 
-    Deliberately still unavailable. The path exists in the management cycle,
-    but exposing it here before the scheduler owns the book would create a
-    second way to act on a policy — and a second path is a second thing that
-    can be wrong.
-    """
-    raise EndpointNotReadyError(
-        "Operator-requested closes",
-        "exits currently run through the management cycle; a second path would be "
-        "a second thing that can be wrong (FR-066)",
-    )
+    return operator_controller.request_close(policy_id, reason)

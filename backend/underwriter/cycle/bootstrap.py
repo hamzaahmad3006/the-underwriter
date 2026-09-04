@@ -29,6 +29,7 @@ from sqlalchemy import select
 
 from underwriter.agent.client import GroqClient, LLMUnavailableError
 from underwriter.agent.underwriter import AIUnderwriter
+from underwriter.audit.ledger import Actor, append
 from underwriter.claims.desk import ManagedPosition
 from underwriter.claims.pricing import price_position, underlying_price
 from underwriter.cycle.manage import run_management_cycle
@@ -40,7 +41,7 @@ from underwriter.data.credentials import has_credentials
 from underwriter.data.ports import MarketDataSource
 from underwriter.data.snapshot import DEFAULT_SNAPSHOT_CONFIG, SnapshotConfig
 from underwriter.db import session_scope
-from underwriter.db.models import Policy, PolicyLeg, SystemConfig
+from underwriter.db.models import Account, Policy, PolicyLeg, SystemConfig
 from underwriter.db.queries import book_summary
 from underwriter.domain.market import OptionRight, Side
 from underwriter.domain.money import ZERO
@@ -93,6 +94,62 @@ def ensure_system_config() -> None:
             config.mode = str(BOOT_MODE)
             config.updated_at = datetime.now(UTC)
             config.updated_by = "BOOT"
+
+
+def ensure_account() -> str | None:
+    """ALP-001, ALP-002 — record the account and its baseline equity at boot.
+
+    Without this row the Kernel has no account state to read, and SK-025
+    refuses every proposal including a close. That is correct of SK-025 and
+    wrong of us: a desk that comes back up holding positions must be able to
+    manage them before the first reconciliation lands.
+
+    The baseline is written once and never updated. It is the fixed point every
+    drawdown and equity-curve figure is measured against, so a "helpful" refresh
+    would quietly reset the drawdown the desk is being judged on.
+    """
+    broker = build_broker()
+    if broker is None:
+        return None
+
+    try:
+        raw = broker._client.get_account()
+        account_id = str(getattr(raw, "account_number", "") or getattr(raw, "id", ""))
+        equity = Decimal(str(getattr(raw, "equity", "0")))
+    except Exception as exc:
+        log.warning("could not read the account for provisioning: %s", exc)
+        return None
+
+    if not account_id or equity <= ZERO:
+        return None
+
+    with session_scope() as session:
+        existing = session.execute(
+            select(Account).where(Account.alpaca_account_id == account_id)
+        ).scalar_one_or_none()
+
+        if existing is not None:
+            return existing.id
+
+        row = Account(
+            alpaca_account_id=account_id,
+            is_paper=1,  # the schema CHECKs this; a live account cannot be stored
+            baseline_equity=equity,
+            baseline_at=datetime.now(UTC),
+        )
+        session.add(row)
+        session.flush()
+
+        append(
+            session,
+            actor=Actor.SCHEDULER,
+            action="ACCOUNT_PROVISIONED",
+            entity_type="account",
+            entity_id=row.id,
+            after={"alpaca_account_id": account_id, "baseline_equity": str(equity)},
+        )
+        log.info("recorded account %s with baseline equity %s", account_id, equity)
+        return row.id
 
 
 def current_mode() -> SystemMode:
@@ -300,6 +357,27 @@ def open_positions(
             )
 
         return tuple(positions), proposals
+
+
+def signing_secret() -> str:
+    """The Kernel signing key. Absent means nothing can be authorised at all."""
+    secret = os.environ.get("KERNEL_SIGNING_SECRET", "").strip()
+    if not secret:
+        raise RuntimeError("KERNEL_SIGNING_SECRET is unset; no verdict can be minted")
+    return secret
+
+
+def build_broker() -> AlpacaBroker | None:
+    """A trading-credentialed broker, or None. Read paths tolerate None."""
+    try:
+        return AlpacaBroker()
+    except Exception:
+        return None
+
+
+def force_manage_only(reason: str) -> None:
+    """Public name for the mode forcing that F-19 and F-25 both land on."""
+    _force_manage_only(reason)
 
 
 def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wiring:
