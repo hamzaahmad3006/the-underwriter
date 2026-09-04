@@ -129,6 +129,9 @@ cd frontend
 npm install && npm run dev    # http://localhost:5173
 ```
 
+Deploying it is [DEPLOY.md](DEPLOY.md) — Fly for the backend, Vercel for the
+front end, and the one-instance constraint that shapes both.
+
 Or both together:
 
 ```bash
