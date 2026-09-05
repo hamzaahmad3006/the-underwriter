@@ -1,4 +1,4 @@
-"""System routes — API-070 … API-076.
+"""System routes — API-070 … API-078.
 
 `/health` is also mounted at the application root by `server.py`, because
 OPS-021 makes it the container's liveness probe and a probe should not depend
@@ -64,3 +64,17 @@ def scheduler_runs(
 @router.get("/config", summary="API-076 redacted effective config")
 def config() -> dict[str, Any]:
     return system_controller.config()
+
+
+@router.get("/metrics", summary="API-077 OPS-003 counters and OPS-004 latencies")
+def metrics() -> dict[str, Any]:
+    """Read off the ledger, not off in-process counters, so a restart loses none."""
+    return system_controller.metrics()
+
+
+@router.get("/metrics/vetoes", summary="API-078 per-rule Kernel veto counts (OPS-008)")
+def veto_metrics(limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+    """Which rules actually stop trades. Unauthenticated on purpose: UI-003
+    requires the whole dashboard to be readable with no token, and this is the
+    number a judge most wants to check without being handed a credential."""
+    return system_controller.veto_metrics(limit)

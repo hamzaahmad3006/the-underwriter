@@ -1,4 +1,4 @@
-"""System endpoints — API-070 … API-076.
+"""System endpoints — API-070 … API-078.
 
 `/health` must answer without touching the database or Alpaca (OPS-021): it is
 the container's liveness probe, and a probe that depends on a dependency
@@ -20,6 +20,7 @@ from underwriter.data.credentials import has_credentials, load_data_credentials
 from underwriter.db import session_scope
 from underwriter.db.models import SchedulerRun, SystemConfig
 from underwriter.kernel.limits import DEFAULT_LIMITS
+from underwriter.obs import metrics as obs_metrics
 
 BOOT_TIME = time.monotonic()
 
@@ -380,3 +381,25 @@ def config() -> dict[str, Any]:
             "enforced before any order is transmitted."
         ),
     }
+
+
+def metrics() -> dict[str, Any]:
+    """API-077 — OPS-003 counters and OPS-004 latencies.
+
+    Not in §19.2's endpoint table, which lists no way to read the counters
+    OPS-003 requires (DEV-12). A metric nobody can query is a metric that does
+    not exist, and OPS-008 is explicit that the Kernel's per-rule numbers must
+    be "queryable and displayed".
+    """
+    return obs_metrics.snapshot()
+
+
+def veto_metrics(limit: int = 30) -> dict[str, Any]:
+    """API-078 — OPS-008, the per-rule veto breakdown.
+
+    Separate from `/metrics` because it answers a different question and gets
+    asked far more often: not "how is the desk running" but "what actually
+    stops a trade here". That is the question the Kernel exists to answer, so
+    it gets its own URL and its own panel on the dashboard.
+    """
+    return obs_metrics.veto_summary(limit)

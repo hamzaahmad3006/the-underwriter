@@ -1,7 +1,13 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { endpoints } from '../../../api/endpoints'
-import type { KernelVerdict, LimitTable, SimulateBody, SimulationResult } from '../../../api/types'
+import type {
+  KernelVerdict,
+  LimitTable,
+  SimulateBody,
+  SimulationResult,
+  VetoMetrics,
+} from '../../../api/types'
 
 /** A proposal the Kernel should wave through. */
 export const SOUND_PROPOSAL: SimulateBody = {
@@ -44,10 +50,18 @@ export function useKernel() {
     retry: false, // a 503 here is a known gap, not a flake
   })
 
+  // OPS-008 requires these to be queryable *and* displayed. Polled with
+  // everything else rather than fetched once: a veto that lands while the page
+  // is open is exactly the moment the number is worth watching.
+  const vetoes = useQuery({
+    queryKey: ['kernel', 'vetoes'],
+    queryFn: () => api.get<VetoMetrics>(endpoints.vetoMetrics),
+  })
+
   const simulation = useMutation({
     mutationFn: (body: SimulateBody) =>
       api.post<SimulationResult>(endpoints.kernelSimulate, body),
   })
 
-  return { limits, feed, simulation }
+  return { limits, feed, vetoes, simulation }
 }

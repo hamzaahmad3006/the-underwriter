@@ -44,7 +44,7 @@ export const endpoints = {
   auditVerify: `${API_PREFIX}/audit/verify`,
   auditExport: (format: 'json' | 'csv') => `${API_PREFIX}/audit/export?format=${format}`,
 
-  // System — API-070..076
+  // System — API-070..078
   health: '/health',
   healthDeep: `${API_PREFIX}/health/deep`,
   status: `${API_PREFIX}/system/status`,
@@ -52,4 +52,6 @@ export const endpoints = {
   killSwitch: `${API_PREFIX}/system/kill-switch`,
   schedulerRuns: `${API_PREFIX}/scheduler/runs`,
   config: `${API_PREFIX}/config`,
+  metrics: `${API_PREFIX}/metrics`,
+  vetoMetrics: `${API_PREFIX}/metrics/vetoes`,
 } as const

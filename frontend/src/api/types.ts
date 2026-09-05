@@ -225,3 +225,28 @@ export interface VerdictFeed {
   vetoed: number
   empty: boolean
 }
+
+/**
+ * OPS-008 — per-rule veto counts.
+ *
+ * `failures` counts rules, `proposals_blocked` counts proposals. They differ
+ * whenever one proposal broke several limits at once, and the difference is
+ * the interesting part: a rule can be loud without stopping much.
+ */
+export interface RuleVetoCount {
+  rule_id: string
+  name: string | null
+  severity: 'HARD' | 'SOFT' | null
+  failures: number
+  proposals_blocked: number
+}
+
+export interface VetoMetrics {
+  as_of: string
+  proposals_evaluated: number
+  approved: number
+  vetoed: number
+  veto_rate: number | null
+  rules_exercised: number
+  by_rule: RuleVetoCount[]
+}

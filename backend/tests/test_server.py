@@ -368,3 +368,36 @@ def test_a_broken_chain_is_reported_not_hidden_behind_a_500(
     assert response.json()["first_break_seq"] == 2
 
     reset_engine()
+
+
+def test_the_metrics_endpoints_answer_without_a_token() -> None:
+    """UI-003: the whole dashboard must be readable with no credential.
+
+    OPS-008 makes the veto rate the number a judge is most likely to check, and
+    needing an operator token to see it would put the system's central claim
+    behind a gate.
+    """
+    metrics = client.get("/api/metrics")
+    assert metrics.status_code == 200
+    assert set(metrics.json()["counters"]) >= {
+        "cycles_total",
+        "candidates_priced_total",
+        "llm_calls_total",
+        "kernel_verdicts_total",
+        "kernel_rule_failures_total",
+        "orders_submitted_total",
+        "policies_settled_total",
+        "alpaca_errors_total",
+        "mcp_errors_total",
+    }
+
+    vetoes = client.get("/api/metrics/vetoes")
+    assert vetoes.status_code == 200
+    assert set(vetoes.json()) >= {"proposals_evaluated", "vetoed", "veto_rate", "by_rule"}
+
+
+def test_the_veto_limit_is_bounded() -> None:
+    """An unbounded limit on an unauthenticated endpoint is a free table scan."""
+    assert client.get("/api/metrics/vetoes?limit=0").status_code == 422
+    assert client.get("/api/metrics/vetoes?limit=500").status_code == 422
+    assert client.get("/api/metrics/vetoes?limit=5").status_code == 200

@@ -191,6 +191,14 @@ all clean, plus TypeScript and oxlint on the front end.
 - **The desk boots in `MANAGE_ONLY`, always.** After a restart the book and the
   broker may disagree, and the first cycle must not open a position on top of a
   divergence nobody has looked at.
+- **Metrics are derived from the ledger, not counted in memory.** `GET /metrics`
+  aggregates the rows the system already wrote. An in-process registry would
+  reset on restart and drift the moment a new code path forgot to increment it,
+  and when it disagreed with the audit log there would be no way to tell which
+  one had lied. This way a metric can only be wrong if the book is wrong.
+- **Every log line is JSON carrying its correlation id.** One id covers the
+  scheduler row, the log lines and the database rows for a cycle, so a cycle
+  reads as one story rather than five rows sharing a timestamp.
 
 ---
 
@@ -210,6 +218,7 @@ backend/underwriter/
 ├── cycle/        Orchestration, the scheduler, and the recorder
 ├── db/           The 20-table schema and its read models
 ├── audit/        The hash-chained ledger
+├── obs/          Structured logging and ledger-derived metrics
 ├── routes/       Path, method, auth declaration only
 ├── controllers/  One module per resource, callable straight from a test
 └── middleware/   Correlation ids, error envelope, operator auth

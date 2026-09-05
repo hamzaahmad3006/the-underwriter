@@ -17,6 +17,11 @@ Three properties matter more than the scheduling itself:
   nothing. `NO_ACTION` is a distinct status from `ERROR` (FR-026).
 * **A job never raises.** ERR-006 alerts after three consecutive failures; one
   failure is recorded and the next tick tries again.
+
+OPS-002: the correlation id is minted here and handed *into* the cycle, rather
+than each cycle minting its own. One id then covers the scheduler row, every log
+line the job emits, and every database row the cycle writes — which is what
+makes a cycle one story instead of five that share a timestamp.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from underwriter.cycle.underwrite import CycleStatus, new_correlation_id
 from underwriter.db import session_scope
 from underwriter.db.models import SchedulerRun, SystemEvent
+from underwriter.obs.logging import correlation
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +58,9 @@ class JobResult:
     correlation_id: str | None = None
 
 
-JobFn = Callable[[], JobResult]
+# Takes the correlation id the scheduler minted, so the cycle records itself
+# under the same id its log lines carry.
+JobFn = Callable[[str], JobResult]
 
 
 class CycleScheduler:
@@ -100,19 +108,34 @@ class CycleScheduler:
         started = datetime.now(UTC)
         correlation_id = new_correlation_id()
 
-        try:
-            result = job()
-        except Exception as exc:
-            log.exception("cycle %s failed", name)
-            result = JobResult(
-                CycleStatus.ERROR,
-                type(exc).__name__,
-                str(exc),
-                correlation_id=correlation_id,
+        with correlation(correlation_id):
+            log.info("cycle started", extra={"job": name})
+            try:
+                result = job(correlation_id)
+            except Exception as exc:
+                # ERR-006 and OPS-010: the trace goes to the log, and the cycle
+                # becomes a recorded ERROR rather than a dead trigger.
+                log.exception("cycle failed", extra={"job": name})
+                result = JobResult(
+                    CycleStatus.ERROR,
+                    type(exc).__name__,
+                    str(exc),
+                    correlation_id=correlation_id,
+                )
+
+            self._track_failures(name, result)
+            self._record(name, result, started, correlation_id)
+
+            log.info(
+                "cycle finished",
+                extra={
+                    "job": name,
+                    "status": str(result.status),
+                    "outcome": result.outcome,
+                    "duration_ms": int((datetime.now(UTC) - started).total_seconds() * 1000),
+                },
             )
 
-        self._track_failures(name, result)
-        self._record(name, result, started, correlation_id)
         return result
 
     def _track_failures(self, name: str, result: JobResult) -> None:
@@ -121,9 +144,12 @@ class CycleScheduler:
             self._failures[name] = self._failures.get(name, 0) + 1
             if self._failures[name] >= CONSECUTIVE_FAILURES_BEFORE_ALERT:
                 log.error(
-                    "job %s has failed %d times consecutively (ERR-006)",
-                    name,
-                    self._failures[name],
+                    "consecutive cycle failures",
+                    extra={
+                        "job": name,
+                        "consecutive_failures": self._failures[name],
+                        "requirement": "ERR-006",
+                    },
                 )
         else:
             self._failures[name] = 0
@@ -162,7 +188,7 @@ class CycleScheduler:
                         )
                     )
         except Exception:
-            log.exception("could not record scheduler run for %s", name)
+            log.exception("could not record scheduler run", extra={"job": name})
 
     # -- lifecycle -------------------------------------------------------
 
@@ -183,7 +209,7 @@ class CycleScheduler:
             )
 
         self._scheduler.start()
-        log.info("scheduler started with jobs: %s", ", ".join(self._jobs))
+        log.info("scheduler started", extra={"jobs": list(self._jobs)})
 
     def shutdown(self, *, wait: bool = True) -> None:
         if self._scheduler.running:

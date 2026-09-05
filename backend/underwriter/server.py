@@ -31,6 +31,7 @@ from underwriter.cycle import bootstrap
 from underwriter.cycle.scheduler import CycleScheduler
 from underwriter.db import create_all
 from underwriter.middleware import RequestIdMiddleware, install_error_handlers
+from underwriter.obs import configure_logging
 from underwriter.routes import api_router
 
 # Read backend/.env if it exists. Real deployments inject secrets through the
@@ -107,16 +108,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     wiring = bootstrap.build()
     for note in wiring.notes:
-        log.warning("wiring: %s", note)
+        log.warning("wiring incomplete", extra={"note": note})
 
     if wiring.scheduler is not None:
         wiring.scheduler.start()
         _scheduler = wiring.scheduler
         log.info(
-            "desk started in %s; underwriting=%s execution=%s",
-            bootstrap.BOOT_MODE,
-            wiring.can_underwrite,
-            wiring.can_execute,
+            "desk started",
+            extra={
+                "mode": bootstrap.BOOT_MODE,
+                "can_underwrite": wiring.can_underwrite,
+                "can_execute": wiring.can_execute,
+                "mcp_context": wiring.uses_mcp,
+                "version": __version__,
+            },
         )
 
     try:
@@ -129,6 +134,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Application factory, so tests can build an app without import side effects."""
+    # First, before anything has a chance to log. Uvicorn configures its own
+    # loggers and leaves the root alone, so until this call every `log.info`
+    # and `log.error` in the system went nowhere — including the ones that
+    # announce a self-imposed halt (OPS-001).
+    configure_logging()
     assert_paper_trading()
 
     app = FastAPI(

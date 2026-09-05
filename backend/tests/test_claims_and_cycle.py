@@ -413,7 +413,7 @@ def scheduler_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def test_a_job_that_raises_never_escapes_the_scheduler(scheduler_db: None) -> None:
     """A throwing job would kill its own trigger and silently stop the desk."""
 
-    def explode() -> JobResult:
+    def explode(correlation_id: str) -> JobResult:
         raise RuntimeError("cycle blew up")
 
     scheduler = CycleScheduler(underwrite=explode)
@@ -428,7 +428,7 @@ def test_every_run_is_recorded_including_the_quiet_ones(scheduler_db: None) -> N
     from underwriter.db.models import SchedulerRun
 
     scheduler = CycleScheduler(
-        underwrite=lambda: JobResult(CycleStatus.NO_ACTION, "NO_QUALIFYING_CANDIDATES")
+        underwrite=lambda _cid: JobResult(CycleStatus.NO_ACTION, "NO_QUALIFYING_CANDIDATES")
     )
     scheduler.run_job("underwrite")
 
@@ -446,7 +446,7 @@ def test_consecutive_failures_are_counted_and_reset(scheduler_db: None) -> None:
         JobResult(CycleStatus.ERROR, "boom"),
         JobResult(CycleStatus.SUCCESS, "fine"),
     ]
-    scheduler = CycleScheduler(manage=lambda: outcomes.pop(0))
+    scheduler = CycleScheduler(manage=lambda _cid: outcomes.pop(0))
 
     scheduler.run_job("manage")
     scheduler.run_job("manage")
@@ -462,7 +462,7 @@ def test_an_unknown_job_is_an_error_not_a_crash(scheduler_db: None) -> None:
 
 
 def test_the_scheduler_reports_its_own_state(scheduler_db: None) -> None:
-    scheduler = CycleScheduler(underwrite=lambda: JobResult(CycleStatus.SUCCESS, "ok"))
+    scheduler = CycleScheduler(underwrite=lambda _cid: JobResult(CycleStatus.SUCCESS, "ok"))
     status = scheduler.status()
 
     assert status["running"] is False
@@ -477,7 +477,7 @@ def test_a_recording_failure_does_not_take_the_cycle_with_it(
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     reset_engine()  # no create_all: the tables do not exist
 
-    scheduler = CycleScheduler(underwrite=lambda: JobResult(CycleStatus.SUCCESS, "ok"))
+    scheduler = CycleScheduler(underwrite=lambda _cid: JobResult(CycleStatus.SUCCESS, "ok"))
     assert scheduler.run_job("underwrite").status is CycleStatus.SUCCESS
 
     reset_engine()
@@ -503,3 +503,78 @@ def test_force_flat_leaves_no_room_to_reach_zero_dte() -> None:
     assert FORCE_FLAT_DTE > 0
     assert (TODAY + timedelta(days=FORCE_FLAT_DTE)) > TODAY
     assert datetime.now(UTC).tzinfo is UTC
+
+
+# ---------------------------------------------------------------------------
+# MCP-001 — the flag has to be switched on by something
+# ---------------------------------------------------------------------------
+
+
+def test_the_cycle_asks_mcp_for_context_when_told_to() -> None:
+    """MCP-001. Off by default so tests and dry runs spawn no subprocess, which
+    means something has to turn it on — and for a while nothing did."""
+    calls: list[str] = []
+
+    def fake_context():  # type: ignore[no-untyped-def]
+        from underwriter.mcp.context import MarketContext
+
+        calls.append("fetched")
+        return MarketContext(account={"equity": "100000.00"}, tools_used=("get_account_info",))
+
+    import underwriter.mcp as mcp_package
+
+    original = mcp_package.fetch_context
+    mcp_package.fetch_context = fake_context  # type: ignore[assignment]
+    try:
+        run_underwriting_cycle(
+            source=chain(),
+            agent=AIUnderwriter(FakeLLM(decision_json())),
+            context=make_context(),
+            secret=SECRET,
+            snapshot_config=SOLO,
+            dry_run=True,
+            use_mcp=True,
+        )
+    finally:
+        mcp_package.fetch_context = original  # type: ignore[assignment]
+
+    assert calls == ["fetched"], "the cycle did not consult MCP for context"
+
+
+def test_the_cycle_spawns_no_subprocess_when_mcp_is_off() -> None:
+    """The default path must stay free of a subprocess spawn."""
+    calls: list[str] = []
+
+    import underwriter.mcp as mcp_package
+
+    original = mcp_package.fetch_context
+    mcp_package.fetch_context = lambda: calls.append("fetched")  # type: ignore[assignment,return-value]
+    try:
+        run_underwriting_cycle(
+            source=chain(),
+            agent=AIUnderwriter(FakeLLM(decision_json())),
+            context=make_context(),
+            secret=SECRET,
+            snapshot_config=SOLO,
+            dry_run=True,
+        )
+    finally:
+        mcp_package.fetch_context = original  # type: ignore[assignment]
+
+    assert calls == []
+
+
+def test_the_bootstrap_turns_mcp_on_when_the_server_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wiring that was missing: availability decides, not a default."""
+    from underwriter.cycle import bootstrap
+
+    monkeypatch.setenv("KERNEL_SIGNING_SECRET", SECRET)
+    monkeypatch.setattr("underwriter.mcp.is_available", lambda: True)
+    assert bootstrap.build().uses_mcp is True
+
+    monkeypatch.setattr("underwriter.mcp.is_available", lambda: False)
+    wiring = bootstrap.build()
+    assert wiring.uses_mcp is False
+    assert any("MCP server is not installed" in note for note in wiring.notes)

@@ -68,6 +68,7 @@ class Wiring:
     can_underwrite: bool
     can_execute: bool
     notes: tuple[str, ...]
+    uses_mcp: bool = False
 
 
 def ensure_system_config() -> None:
@@ -403,6 +404,19 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
     except (LLMUnavailableError, ValueError) as exc:
         notes.append(f"no AI Underwriter: {exc}")
 
+    # MCP-001: the model's view of the world must be genuinely MCP-derived.
+    # The flag defaults to off so tests and the dry-run trigger never spawn a
+    # subprocess, which means the scheduled cycle has to switch it on — and
+    # until it did, the integration was built, tested, and never once used.
+    from underwriter.mcp import is_available as mcp_available
+
+    use_mcp = mcp_available()
+    if not use_mcp:
+        notes.append(
+            "the Alpaca MCP server is not installed; the model's context falls back "
+            "to the book alone (§16.2 marks this path informative)"
+        )
+
     broker = None
     try:
         broker = AlpacaBroker()
@@ -425,7 +439,7 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
         if not cli_available():
             notes.append("the Alpaca CLI is not installed; order pre-flight is skipped")
 
-    def underwrite() -> JobResult:
+    def underwrite(correlation_id: str) -> JobResult:
         if source is None or agent is None:
             return JobResult(CycleStatus.NO_ACTION, "UNDERWRITING_DISABLED", "; ".join(notes))
 
@@ -446,10 +460,12 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
             execution=execution,
             snapshot_config=snapshot_config,
             persist=True,
+            use_mcp=use_mcp,
+            correlation_id=correlation_id,
         )
         return JobResult(report.status, report.outcome, report.detail, report.correlation_id)
 
-    def manage() -> JobResult:
+    def manage(correlation_id: str) -> JobResult:
         positions, proposals = open_positions(source)
         if not positions:
             return JobResult(CycleStatus.NO_ACTION, "NO_OPEN_POLICIES", "the book is empty")
@@ -460,14 +476,15 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
             context=build_kernel_context(),
             secret=secret,
             execution=execution,
+            correlation_id=correlation_id,
         )
         return JobResult(report.status, "MANAGED", report.detail, report.correlation_id)
 
-    def reconcile() -> JobResult:
+    def reconcile(correlation_id: str) -> JobResult:
         if broker is None:
             return JobResult(CycleStatus.NO_ACTION, "RECONCILE_DISABLED", "; ".join(notes))
 
-        report = run_reconcile_cycle(broker)
+        report = run_reconcile_cycle(broker, correlation_id=correlation_id)
         if report.forced_manage_only:
             _force_manage_only(report.detail)
 
@@ -479,6 +496,7 @@ def build(*, snapshot_config: SnapshotConfig = DEFAULT_SNAPSHOT_CONFIG) -> Wirin
         can_underwrite=source is not None and agent is not None,
         can_execute=execution is not None,
         notes=tuple(notes),
+        uses_mcp=use_mcp,
     )
 
 
